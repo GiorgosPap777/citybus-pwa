@@ -1,0 +1,17 @@
+{
+  "name": "citybus-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CORS proxy + token manager for the citybus.gr API, and static host for the PWA",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "dev": "node --env-file-if-exists=.env --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}
