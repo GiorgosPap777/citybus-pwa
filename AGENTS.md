@@ -263,6 +263,39 @@ request live arrivals. It must return data — one refresh, one retry, no loop.
 Front end: `cd web && npm run build`, then load `localhost:3000` and confirm the map frames the city,
 a stop opens with arrivals, and buses appear as coloured markers.
 
+## Releasing
+
+The app is published as a Docker image: **`giorgospap777/citybus-pwa`**
+(https://hub.docker.com/r/giorgospap777/citybus-pwa). `docker-compose.yml` pulls it rather than
+building, so deploying is a pull, not a build on the target host.
+
+To cut a release:
+
+```bash
+docker build -t giorgospap777/citybus-pwa:1.1.0 -t giorgospap777/citybus-pwa:latest .
+docker push giorgospap777/citybus-pwa:1.1.0
+docker push giorgospap777/citybus-pwa:latest
+```
+
+Always move both tags. Pushing only `latest` leaves no way to roll back a bad build.
+
+Before pushing, run the image and check it end to end — the build succeeding proves very little
+on its own:
+
+```bash
+docker run -d --name citybus-test -p 3200:3000 giorgospap777/citybus-pwa:1.1.0
+curl -s localhost:3200/api/health                          # {"ok":true}
+curl -s localhost:3200/api/irakleio/stops/0122/live        # real vehicles
+curl -sI localhost:3200/api/irakleio/stops/0122/live | grep -i cache-control   # must be no-store
+docker inspect --format '{{.State.Health.Status}}' citybus-test               # healthy
+docker exec citybus-test id                                # must be uid 1000 (node), not root
+docker rm -f citybus-test
+```
+
+The image is `linux/amd64` only. If it ever needs to run on ARM, build with
+`docker buildx build --platform linux/amd64,linux/arm64 ... --push`.
+
+
 ## Open items and non-goals
 
 - **Unverified:** service-worker registration and home-screen install have only been checked by
