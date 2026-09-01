@@ -6,6 +6,8 @@ many minutes until each bus arrives, and watch the approaching buses move in rea
 Opens on **Heraklion** by default. **28 of the 30 cities** on the platform work with no
 configuration — the app discovers each one by itself.
 
+[![Docker Image](https://img.shields.io/docker/v/giorgospap777/citybus-pwa?label=docker&sort=semver)](https://hub.docker.com/r/giorgospap777/citybus-pwa)
+
 > Unofficial community app. It reads the same public API the official site uses.
 
 ## Features
@@ -19,6 +21,16 @@ configuration — the app discovers each one by itself.
 - **Installable** — add to your home screen and it runs like a native app.
 
 ## Quick start
+
+### Just run it
+
+```bash
+docker run -d --name citybus -p 3000:3000 -v citybus-cache:/data giorgospap777/citybus-pwa
+```
+
+Open <http://localhost:3000>. Image: [`giorgospap777/citybus-pwa`](https://hub.docker.com/r/giorgospap777/citybus-pwa).
+
+### From source, for development
 
 Two terminals. The API server:
 
@@ -88,10 +100,11 @@ selected. It is an upstream gap, not something this app can fix.
 
 ## Deploying
 
-Runs as a single container. On a server that already has **Nginx Proxy Manager** in front of it:
+Runs as a single container from the published image. On a server that already has **Nginx Proxy
+Manager** in front of it:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 Then add a proxy host pointing at port `3000` and request a certificate. Full walkthrough, including

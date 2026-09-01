@@ -1,7 +1,9 @@
 services:
   citybus:
-    build: .
-    image: citybus-pwa:latest
+    # Published image — no build needed. To build from source instead, run
+    #   docker build -t citybus-pwa:local .
+    # and change this line to `image: citybus-pwa:local`.
+    image: giorgospap777/citybus-pwa:latest
     container_name: citybus
     restart: unless-stopped
 

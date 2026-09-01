@@ -8,26 +8,28 @@ Immich, exposed on a public domain.
 - A DNS record — say `bus.example.gr` — pointing at your VM's public IP.
 - Ports **80 and 443** forwarded to Nginx Proxy Manager (it already needs these for your other
   services; Let's Encrypt validates over port 80).
-- Docker and the compose plugin on the VM.
+- Docker and the compose plugin on the VM (x86_64 — the published image is `linux/amd64`).
 
 **HTTPS is mandatory here, not a nicety.** Installing to a home screen and reading GPS both require a
 secure context. Over plain HTTP the app still shows arrivals, but "Add to Home Screen" and "Near me"
 will not work.
 
-## 1. Get the code onto the VM
+## 1. Get the compose file onto the VM
 
 ```bash
-git clone <your-repo-url> citybus && cd citybus
+git clone https://github.com/GiorgosPap777/citybus-pwa.git citybus && cd citybus
 ```
+
+Only `docker-compose.yml` is strictly needed — the image is published, so the VM never builds
+anything. Cloning is just the easiest way to get the file and keep it updatable.
 
 ## 2. Start it
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-The first build takes a couple of minutes (it builds the PWA, then a slim runtime image). Check it
-came up:
+This pulls `giorgospap777/citybus-pwa:latest` (about 60 MB) and starts it. Check it came up:
 
 ```bash
 docker compose ps && curl -s localhost:3000/api/health
@@ -115,11 +117,14 @@ app, stored in their own browser.
 ## Updating
 
 ```bash
-git pull && docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 The service worker is set to `autoUpdate`, so phones pick up the new version on next launch without
 being reinstalled.
+
+To pin a specific release instead of tracking `latest`, set the tag explicitly in
+`docker-compose.yml`, e.g. `image: giorgospap777/citybus-pwa:1.0.0`.
 
 ## Backups
 
