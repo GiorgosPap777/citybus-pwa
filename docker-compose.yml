@@ -1,0 +1,26 @@
+services:
+  citybus:
+    build: .
+    image: citybus-pwa:latest
+    container_name: citybus
+    restart: unless-stopped
+
+    environment:
+      PORT: 3000
+      # City the app opens on. Users can change it in the app's settings.
+      DEFAULT_CITY: irakleio
+      DEFAULT_LANG: el
+      CACHE_DIR: /data
+
+    volumes:
+      # Keeps bearer tokens and stop lists across restarts.
+      - citybus-cache:/data
+
+    # Nginx Proxy Manager forwards here. If NPM runs in Docker on this same
+    # host, prefer the shared-network option in DEPLOY.md and delete this
+    # block — then nothing is exposed on the LAN at all.
+    ports:
+      - "3000:3000"
+
+volumes:
+  citybus-cache:

@@ -88,19 +88,25 @@ selected. It is an upstream gap, not something this app can fix.
 
 ## Deploying
 
+Runs as a single container. On a server that already has **Nginx Proxy Manager** in front of it:
+
+```bash
+docker compose up -d --build
+```
+
+Then add a proxy host pointing at port `3000` and request a certificate. Full walkthrough, including
+the exact NPM settings and the update procedure, is in **[DEPLOY.md](DEPLOY.md)**.
+
 **HTTPS is required, not cosmetic:** installing a PWA and reading GPS both need a secure context.
 `localhost` is exempt, so development needs nothing extra.
 
-The smallest real deployment is Caddy in front of the Node process:
+Without Docker, [Caddy](https://caddyserver.com) in front of `npm start` is the smallest option:
 
 ```
 bus.example.gr {
     reverse_proxy localhost:3000
 }
 ```
-
-Caddy obtains and renews the certificate itself. A Cloudflare or Tailscale tunnel works too if you
-would rather not open a port.
 
 To install on a phone, open the site in Chrome (Android) or Safari (iOS) and choose **Add to Home
 Screen**. It then runs full screen with no browser chrome.
@@ -114,6 +120,7 @@ web/             React 19 + Vite + Leaflet PWA
   src/components/  StopMap · StopSheet · HomePanel · SettingsSheet
   src/hooks/       useStops · useLiveArrivals · useGeolocation · useFavourites
 AGENTS.md        architecture notes, API reference, and why the tricky code is shaped as it is
+DEPLOY.md        putting it on a server behind Nginx Proxy Manager
 ```
 
 ## API
