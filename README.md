@@ -6,6 +6,8 @@ many minutes until each bus arrives, and watch the approaching buses move in rea
 Opens on **Heraklion** by default. **28 of the 30 cities** on the platform work with no
 configuration — the app discovers each one by itself.
 
+**Live instance: <https://bus.ginet.vip>** — open it on your phone and add it to your home screen.
+
 [![Docker Image](https://img.shields.io/docker/v/giorgospap777/citybus-pwa?label=docker&sort=semver)](https://hub.docker.com/r/giorgospap777/citybus-pwa)
 
 > Unofficial community app. It reads the same public API the official site uses.
@@ -22,13 +24,20 @@ configuration — the app discovers each one by itself.
 
 ## Quick start
 
-### Just run it
+### Use the hosted one
+
+<https://bus.ginet.vip> — nothing to install. On Android open it in Chrome and choose *Add to Home
+Screen*; on iOS use Safari's Share sheet.
+
+### Run your own
 
 ```bash
 docker run -d --name citybus -p 3000:3000 -v citybus-cache:/data giorgospap777/citybus-pwa
 ```
 
 Open <http://localhost:3000>. Image: [`giorgospap777/citybus-pwa`](https://hub.docker.com/r/giorgospap777/citybus-pwa).
+
+To put it on a domain with HTTPS, see [DEPLOY.md](DEPLOY.md).
 
 ### From source, for development
 

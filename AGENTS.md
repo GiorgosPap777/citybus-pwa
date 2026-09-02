@@ -298,10 +298,10 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
 
 ## Open items and non-goals
 
-- **Unverified:** service-worker registration and home-screen install have only been checked by
-  serving the assets correctly (`sw.js`, `manifest.webmanifest` and icons all serve with correct
-  content types). Registration was blocked in the dev preview browser, so **installability still
-  needs confirming on a real device over HTTPS.**
+- **Verified working:** home-screen install and the service worker, confirmed on a real device
+  against the live instance at <https://bus.ginet.vip>. Note that service workers and geolocation
+  need a secure context, so this only holds over HTTPS — a reverse proxy must force SSL, or users
+  arriving over plain HTTP silently lose both.
 - **Not built, endpoints confirmed working:** route polylines on the map, timetables, line browsing.
   All additive — see the endpoint table.
 - **HTTPS is required in production**, not cosmetic: PWA install and geolocation both need a secure
