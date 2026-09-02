@@ -5,3 +5,6 @@ dev-dist/
 .env
 *.log
 .DS_Store
+
+# Local notes, not for the public repo
+DOCKERHUB.md

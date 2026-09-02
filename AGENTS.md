@@ -295,7 +295,6 @@ docker rm -f citybus-test
 The image is `linux/amd64` only. If it ever needs to run on ARM, build with
 `docker buildx build --platform linux/amd64,linux/arm64 ... --push`.
 
-
 ## Open items and non-goals
 
 - **Verified working:** home-screen install and the service worker, confirmed on a real device
