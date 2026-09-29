@@ -23,3 +23,12 @@ export const fetchStops = (city, lang, signal) =>
 
 export const fetchLiveArrivals = (city, lang, stopCode, signal) =>
   getJson(`/api/${city}/stops/${encodeURIComponent(stopCode)}/live?lang=${lang}`, signal);
+
+export const fetchRouteShape = (city, lineCode, routeCode, signal) =>
+  getJson(
+    `/api/${city}/lines/${encodeURIComponent(lineCode)}/routes/${encodeURIComponent(routeCode)}/shape`,
+    signal,
+  );
+
+export const fetchSchedule = (city, lang, stopCode, signal) =>
+  getJson(`/api/${city}/stops/${encodeURIComponent(stopCode)}/schedule?lang=${lang}`, signal);

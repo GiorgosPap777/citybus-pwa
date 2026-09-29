@@ -32,9 +32,22 @@ export default defineConfig({
         runtimeCaching: [
           {
             // Live arrivals must never come from a cache — a stale bus time is
-            // worse than no bus time. Listed first so it wins the match.
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname.endsWith('/live'),
+            // worse than no bus time. Listed first so it wins the match. The
+            // schedule is "next departures from now", so a cached copy is just as wrong.
+            urlPattern: ({ url }) =>
+              url.pathname.startsWith('/api/') &&
+              (url.pathname.endsWith('/live') || url.pathname.endsWith('/schedule')),
             handler: 'NetworkOnly',
+          },
+          {
+            // A route's street path changes only when the operator redraws it. Its
+            // own cache, so viewing many routes cannot evict the stop lists below.
+            urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname.endsWith('/shape'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'citybus-shapes',
+              expiration: { maxEntries: 80, maxAgeSeconds: 7 * 24 * 60 * 60 },
+            },
           },
           {
             // Stops, lines and the city list barely change; serving them instantly

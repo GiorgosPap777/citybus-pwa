@@ -16,10 +16,16 @@ configuration — the app discovers each one by itself.
 
 - **Map of every stop** in the city, tap one to open it.
 - **Live arrivals** — line, destination and minutes, refreshed every 15 seconds.
-- **Buses on the map**, coloured by line, moving as they approach.
-- **Near me** — sorts stops by distance using your phone's GPS.
+- **Timetable fallback** — when no bus is due in the next 30 minutes, shows the next scheduled
+  departures instead, rolling into tomorrow's first buses late at night.
+- **Buses on the map**, coloured by line, gliding smoothly between updates.
+- **Tap a bus to follow it** — draws its route on the map and frames the bus together with your stop.
+- **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
+  of the next buses, and see the whole map.
+- **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk.
+- **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ`.
 - **Favourites** — save your home and work stops; they open first, no map needed.
-- **Greek and English**, including translated stop and line names.
+- **Greek and English**, including translated stop, line and city names.
 - **Installable** — add to your home screen and it runs like a native app.
 
 ## Quick start
@@ -140,7 +146,7 @@ server/          Express proxy + token manager + cache; serves web/dist in produ
   src/citybus.js   all upstream contact lives here
 web/             React 19 + Vite + Leaflet PWA
   src/components/  StopMap · StopSheet · HomePanel · SettingsSheet
-  src/hooks/       useStops · useLiveArrivals · useGeolocation · useFavourites
+  src/hooks/       useStops · useLiveArrivals · useSchedule · useGeolocation · useFavourites
 AGENTS.md        architecture notes, API reference, and why the tricky code is shaped as it is
 DEPLOY.md        putting it on a server behind Nginx Proxy Manager
 ```
@@ -155,6 +161,8 @@ GET /api/cities                             all citybus.gr cities
 GET /api/:city/stops?lang=el                every stop with coordinates
 GET /api/:city/lines?lang=el                lines with colours and routes
 GET /api/:city/stops/:code/live?lang=el     arrivals plus live vehicle positions
+GET /api/:city/stops/:code/schedule?lang=el next timetabled departures from now
+GET /api/:city/lines/:line/routes/:route/shape  one route's street path, simplified
 ```
 
 City slugs are validated against `[a-z0-9-]` before being interpolated into a hostname, so the proxy

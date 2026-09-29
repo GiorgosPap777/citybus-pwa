@@ -1,6 +1,21 @@
 import { useMemo, useState } from 'react';
 import { formatDistance, nearestStops } from '../geo.js';
 
+/**
+ * Greek stop names are mostly capitals without accents ("ΠΑΝΕΠΙΣΤΗΜΙΟ"), but
+ * people type lowercase with them ("πανεπιστήμιο"), which lowercasing alone never
+ * matches. Strip diacritics and fold final sigma so both sides compare equal.
+ * Tolerates a missing name: an installed app can still hold an older cached stop
+ * list in which a few English names were null.
+ */
+const fold = (text) =>
+  String(text ?? '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase()
+    .replace(/ς/g, 'σ')
+    .replace(/\s+/g, ' ');
+
 function StopRow({ stop, onSelect, trailing }) {
   return (
     <li>
@@ -19,21 +34,26 @@ export default function HomePanel({
   onSelectStop,
   geo,
   onRequestLocation,
+  collapsed,
+  onExpand,
   t,
 }) {
   const [query, setQuery] = useState('');
 
+  // Folded once per stop list, not once per keystroke.
+  const searchIndex = useMemo(
+    () => stops.map((stop) => ({ stop, code: fold(stop.code), name: fold(stop.name) })),
+    [stops],
+  );
+
   const results = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
+    const needle = fold(query).trim();
     if (!needle) return null;
-    return stops
-      .filter(
-        (s) =>
-          s.code.toLocaleLowerCase().includes(needle) ||
-          s.name.toLocaleLowerCase().includes(needle),
-      )
-      .slice(0, 25);
-  }, [query, stops]);
+    return searchIndex
+      .filter((entry) => entry.code.includes(needle) || entry.name.includes(needle))
+      .slice(0, 25)
+      .map((entry) => entry.stop);
+  }, [query, searchIndex]);
 
   const favouriteStops = useMemo(() => {
     const byCode = new Map(stops.map((s) => [s.code, s]));
@@ -61,12 +81,15 @@ export default function HomePanel({
           className="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onFocus={onExpand}
           placeholder={t('searchStops')}
           aria-label={t('searchStops')}
         />
       </div>
 
-      {results !== null ? (
+      {/* Collapsed, the panel keeps only the search box: the one thing worth
+          reaching for while looking at the map. */}
+      {collapsed ? null : results !== null ? (
         results.length ? (
           <ul className="stop-list">
             {results.map((stop) => (

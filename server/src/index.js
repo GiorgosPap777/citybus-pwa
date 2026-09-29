@@ -4,7 +4,14 @@ import fs from 'node:fs';
 import express from 'express';
 
 import { getCities } from './cities.js';
-import { getLines, getLiveArrivals, getStops, HttpError } from './citybus.js';
+import {
+  getLines,
+  getLiveArrivals,
+  getRouteShape,
+  getSchedule,
+  getStops,
+  HttpError,
+} from './citybus.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +53,12 @@ app.get('/api/:city/lines', route(async (req, res) => {
   res.json(lines);
 }));
 
+app.get('/api/:city/lines/:line/routes/:route/shape', route(async (req, res) => {
+  const shape = await getRouteShape(req.params.city, req.params.line, req.params.route);
+  res.set('cache-control', 'public, max-age=86400');
+  res.json(shape);
+}));
+
 app.get('/api/:city/stops/:code/live', route(async (req, res) => {
   const arrivals = await getLiveArrivals(req.params.city, langOf(req), req.params.code);
   // Never let a browser or intermediary serve a stale bus time.
@@ -53,9 +66,28 @@ app.get('/api/:city/stops/:code/live', route(async (req, res) => {
   res.json(arrivals);
 }));
 
+app.get('/api/:city/stops/:code/schedule', route(async (req, res) => {
+  const schedule = await getSchedule(req.params.city, langOf(req), req.params.code);
+  // "Next departures" is relative to now; a cached copy would list buses long gone.
+  res.set('cache-control', 'no-store');
+  res.json(schedule);
+}));
+
 // Serve the built PWA when it exists, with an SPA fallback for client-side routes.
 if (fs.existsSync(WEB_DIST)) {
-  app.use(express.static(WEB_DIST, { index: 'index.html' }));
+  app.use(
+    express.static(WEB_DIST, {
+      index: 'index.html',
+      // Vite content-hashes everything in assets/, so a URL there never changes
+      // meaning. Without this each visit revalidates every file — a round trip
+      // apiece over what is often a home uplink.
+      setHeaders: (res, filePath) => {
+        if (filePath.startsWith(path.join(WEB_DIST, 'assets') + path.sep)) {
+          res.set('cache-control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }),
+  );
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
     res.sendFile(path.join(WEB_DIST, 'index.html'));

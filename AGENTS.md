@@ -60,18 +60,21 @@ is the blast radius.
 
 ### City coverage
 
-Surveyed 2026-09-01 by requesting `/api/{slug}/stops` for every slug on the citybus.gr landing page.
+Surveyed 2026-09-29 by requesting `/api/{slug}/stops` for every slug on the citybus.gr landing page.
 **28 of 30 return data.** Stop counts, useful as regression baselines:
 
 | | | | |
 |---|---|---|---|
-| agrinio 460 | alexandroupoli 318 | arta 351 | chalkida 489 |
-| chania 474 | chios 377 | corfu 485 | drama 402 |
-| ioannina 406 | irakleio 496 | kastoria 209 | katerini 508 |
-| kavala 216 | komotini 219 | kozani 351 | lamia 489 |
-| larisa 520 | mesologgi 85 | mitilini 338 | naousa 266 |
-| patra 813 | ptolemaida 182 | salamina 420 | serres 342 |
-| skiathos 154 | veroia 429 | volos 424 | xanthi 160 |
+| agrinio 832 | alexandroupoli 328 | arta 351 | chalkida 489 |
+| chania 483 | chios 392 | corfu 485 | drama 402 |
+| ioannina 429 | irakleio 547 | kastoria 209 | katerini 508 |
+| kavala 220 | komotini 235 | kozani 351 | lamia 489 |
+| larisa 532 | mesologgi 85 | mitilini 336 | naousa 266 |
+| patra 847 | ptolemaida 182 | salamina 420 | serres 398 |
+| skiathos 154 | veroia 429 | volos 431 | xanthi 183 |
+
+Counts drift as operators add stops — between the 2026-09-01 and 2026-09-29 surveys Heraklion went
+496 → 547 and Agrinio 460 → 832. A changed count is not a regression; a `FAIL` is.
 
 **`trikala` (119) and `yper-xanthi` (111) do not work.** Their sites exist and serve a valid token
 and agency code, but the API has no data for those agencies — `/stops` *and* `/lines` both return
@@ -92,20 +95,28 @@ so a naive `len()` reports a plausible-looking small number instead of an error.
 
 ### Endpoints
 
-`{lang}` is `el` or `en`; both are fully populated (English returns translated stop and line names).
+`{lang}` is `el` or `en`; both are populated (English returns translated stop and line names), with
+the gap noted under *Data quirks*.
 `{agency}` is the numeric agency code.
 
 | Endpoint | Returns | Used? |
 |---|---|---|
 | `/api/v1/{lang}/{agency}/stops` | all stops: `code`, `name`, `latitude`, `longitude`, `lineCodes[]`, `routeCodes[]` | yes |
-| `/api/v1/{lang}/{agency}/stops/live/{code}` | `vehicles[]`: `lineCode`, `lineName`, `routeName`, `latitude`, `longitude`, `departureMins`, `departureSeconds`, `vehicleCode`, `lineColor`, `lineTextColor`, `borderColor` | yes |
+| `/api/v1/{lang}/{agency}/stops/live/{code}` | `vehicles[]`: `lineCode`, `lineName`, `routeCode`, `routeName`, `latitude`, `longitude`, `departureMins`, `departureSeconds`, `vehicleCode`, `lineColor`, `lineTextColor`, `borderColor` | yes |
 | `/api/v1/{lang}/{agency}/lines` | lines with nested `routes[]` and colours | proxied, unused by UI |
-| `/api/v1/{agency}/lines/{line}/points` | route polylines. **No `{lang}` segment** — easy to get wrong | no |
+| `/api/v1/{agency}/lines/{line}/points` | `[{routeCode, routePoints[]}]`, every route of the line; each point has `sequence` and string `latitude`/`longitude`. **No `{lang}` segment** — easy to get wrong | yes, via `/shape` |
 | `/api/v1/{lang}/{agency}/routes/{route}/sequence` | ordered stop codes for a route | no |
-| `/api/v1/{lang}/{agency}/trips/stop/{code}/day/{day}` | scheduled departures | no |
+| `/api/v1/{lang}/{agency}/trips/stop/{code}/day/{day}` | one weekday's timetable for a stop: `tripTime` (`"HH:MM"`), `tripTimeHour`, `tripTimeMinute`, `lineCode`, `lineName`, `routeName`, `lineColor`, `lineTextColor`, sorted by time | yes |
 
-Sizes for Heraklion: stops 107 KB / 496 entries, lines 12 KB / 26 entries, **line points 530 KB for a
-single line** — lazy-load that one if you ever wire it up.
+Sizes for Heraklion: stops 118 KB / 547 entries, lines 12 KB / 26 entries, **line points 86 KB for a
+one-route line** (line `06`: 900 points) and up to ~530 KB for a line with many routes. The server
+never forwards those as-is — see `/shape` below. A busy stop's timetable is ~90 KB per day, mostly the
+stop's own name repeated on every trip; the server trims it before caching.
+
+`/trips` numbers `{day}` **0 = Sunday … 6 = Saturday** (JavaScript's `getDay()` convention); `7`
+returns 400. Times are Greek wall-clock time, so the server derives "today" in `Europe/Athens`, never
+from the host clock — a container runs in UTC. A stop with no trips that day returns 404, mapped to an
+empty timetable.
 
 Status codes: `200` ok · `401` missing or expired token · `404` unknown stop **or** no buses due in
 the next 30 minutes. Those two 404 meanings are not distinguishable, and the second is far more
@@ -114,13 +125,21 @@ common, so the server maps 404 to `{ vehicles: [], noService: true }` rather tha
 No rate limiting was observed across 12 rapid calls, but see the caching note below — do not remove
 it on the strength of that.
 
-### Two data quirks
+### Data quirks
 
-Both are normalised in `server/src/citybus.js` so nothing downstream has to know:
+All are normalised in `server/src/citybus.js` so nothing downstream has to know:
 
 1. `latitude`/`longitude` are **numbers** in `/stops` but **strings** in `/stops/live`.
 2. A bus with no GPS fix reports latitude `"0"`. Those get `hasPosition: false`. They still belong in
    the arrivals list — the ETA is valid — but must not be drawn on the map.
+3. The English `/stops` feed has **stops with `name: null`** (Heraklion `2196` and `0822` as of
+   2026-09). Observed bug: the client's search called `.toLocaleLowerCase()` on one and the whole app
+   went blank. `fillMissingNames` borrows the Greek name (then the code). It runs *after* the cache
+   read, so entries cached before the fix are repaired too.
+
+An unknown city slug is also worth knowing about: `{slug}.citybus.gr` 302s to the landing page rather
+than 404ing. `fetch` follows that silently, so `fetchSite` checks the final hostname and reports 404 —
+otherwise it surfaces as a misleading "page layout may have changed" 502.
 
 ---
 
@@ -135,7 +154,25 @@ GET /api/cities                             [{slug, name, agencyCode|null}]
 GET /api/:city/stops?lang=el                upstream stops, cached 24h
 GET /api/:city/lines?lang=el                upstream lines, cached 24h
 GET /api/:city/stops/:code/live?lang=el     {vehicles[], noService, fetchedAt}, cached 10s
+GET /api/:city/stops/:code/schedule?lang=el {departures[], fetchedAt}, day timetables cached 12h
+GET /api/:city/lines/:line/routes/:route/shape
+                                            {lineCode, routeCode, points[[lat,lon]]}, cached 24h
 ```
+
+`/shape` is the street path of one route, drawn when the user taps a bus. The upstream serves a whole
+line at once (86–530 KB), and the production host sits on a home connection with ~5 Mbit/s of upload,
+so the server splits the line by route and simplifies each path (Douglas–Peucker, 4 m tolerance,
+`SHAPE_TOLERANCE_M`): line `06` goes from 900 points / 86 KB to ~120 points / ~2.4 KB with no visible
+difference at street zoom. Keep payloads in that range. It is sent `public, max-age=86400`, and the
+service worker keeps shapes in their own `CacheFirst` cache (`citybus-shapes`), so a route is
+downloaded once a week per device, not once per tap.
+
+`/schedule` returns the next 8 timetabled departures from now, rolling into tomorrow when today runs
+out. Each has `time` (`"HH:MM"`), `departsAt` (epoch ms, so the client can drop departures as they
+pass without refetching), `tomorrow`, and the line fields. The UI requests it **only when live arrivals
+are empty** — it answers "when is the next bus?" where live data (30 minutes ahead) cannot. Like
+`/live` it is `no-store`, and the service worker treats it as `NetworkOnly`: a cached "next departures"
+list lists buses long gone.
 
 `agencyCode` in `/api/cities` is `null` until that city has actually been used. Resolving all 30
 eagerly would mean 30 extra page fetches for a field the UI does not need.
@@ -144,7 +181,9 @@ eagerly would mean 30 extra page fetches for a field the UI does not need.
 
 `assertSlug` restricts city slugs to `[a-z0-9-]{1,40}`. The slug is interpolated into
 `https://{slug}.citybus.gr`, so allowing a dot or slash would let a caller redirect that fetch to an
-arbitrary host — SSRF. Do not relax it. `assertStopCode` and `assertLang` exist for the same reason.
+arbitrary host — SSRF. Do not relax it. `assertStopCode` and `assertLang` exist for the same reason,
+and `assertCode` applies the same pattern (`[A-Za-z0-9_-]{1,20}`) to line and route codes, which are
+interpolated into upstream paths.
 
 ---
 
@@ -200,11 +239,67 @@ zero size made `fitBounds` resolve to max zoom (19), stranding all 496 stops off
 - `FitToStops` calls `invalidateSize()` and refuses to fit until the container exceeds 80×80,
   retrying over up to 10 animation frames.
 
-### 5. Map insets (`TOP_INSET`, `SHEET_INSET`)
+### 5. Map insets (`TOP_INSET`, `getBottomInset`)
 
 The top bar and bottom sheet float **over** the map, so centring anything puts it behind the sheet.
 Both the initial fit and `PanTo` steer targets into the visible band between them. `PanTo` shifts the
-centre down by half the hidden height rather than centring on the target.
+centre down by half the hidden height rather than centring on the target; a bus-plus-stop target uses
+`flyToBounds` padded by the same band.
+
+The sheet's height is **measured** (`getBottomInset` in `App.jsx`), because it collapses to a peek and
+grows with its content. `SHEET_INSET` is only the fallback before the sheet exists, and below
+`MIN_BAND_PX` of visible map the band logic is skipped.
+
+Observed bug: opening a stop left it just above the sheet, and then under it. The pan is planned
+against the short "loading" sheet; the arrivals arrive a moment later and the sheet grows over the
+stop. So while a stop is open and expanded, `getBottomInset` returns the sheet's CSS `max-height`,
+the height it can reach, rather than its current height. It reads that from the DOM (`data-mode`,
+`.collapsed`) so the callback stays stable — a changing `getBottomInset` would re-run `PanTo` and
+re-pan to an old target.
+
+### 6. The collapsible sheet (`web/src/hooks/useSheetDrag.js`)
+
+Observed problem: with a stop open the sheet covered ~60% of a phone screen and could not be moved,
+so the buses it listed could not be watched on the map. The sheet now collapses to a peek — the
+stop's name and one chip per bus — by dragging the handle or header down, tapping the handle, tapping
+a bus, or dragging the map. It expands again on a tap or an upward drag.
+
+- Grips use pointer events with `touch-action: none` and pointer capture. They ignore pointers that
+  start on a real control (`button:not(.sheet-handle), input, select, a`), so the star and close
+  buttons in a header keep working.
+- The sheet follows the finger only downward. It is anchored to the bottom edge, so following an
+  upward drag would open a gap beneath it.
+- The handle is 32px tall with **no margin**. A margin between handle and header was a strip that
+  answered neither taps nor drags; a drag starting there did nothing.
+- Map drags collapse the sheet, except the settings sheet, which is modal in spirit.
+
+### 7. Moving buses and the map's render cost (`StopMap.jsx`)
+
+- `GlidingMarker` hands react-leaflet only the **first** position (`useState(position)`) and animates
+  later ones itself over `GLIDE_MS`. react-leaflet calls `setLatLng` whenever `position` changes
+  identity, which cuts every glide short. Jumps over `MAX_GLIDE_M` (a new trip or a GPS glitch) and
+  `prefers-reduced-motion` skip the animation.
+- Stop markers are memoised on `[stops, selectedCode, onSelectStop]`. Otherwise each 15s poll handed
+  all ~550 `CircleMarker`s a new `pathOptions` object, and react-leaflet restyled every one — a full
+  canvas redraw per poll. `onSelectStop` must stay a stable callback for this to hold.
+- The route line and the GPS accuracy circle live in a pane at z-index 390, just below the stops
+  (400), so the line never hides a tappable stop.
+
+### 8. Geolocation is watched, but only while visible (`useGeolocation.js`)
+
+"Near me" has to keep up with someone walking, so the hook uses `watchPosition` rather than a single
+fix. A high-accuracy watch keeps the GPS powered, so it is **stopped while `document.hidden`** and
+restarted on return. The map pans to the user only on an explicit request (and once on the first fix
+after one). Following every fix would stop the user from ever looking elsewhere. A permission denial
+ends the watch and resets it so the button can ask again.
+
+### 9. The error boundary cannot fix what is stored (`ErrorBoundary.jsx`, `useFavourites.js`)
+
+A render error used to leave a blank page. `ErrorBoundary` wraps `<App />` and shows a reload
+button, in the saved language. A reload cannot escape a crash caused by **saved data**, though: that
+data is read again on every launch. So `useFavourites` sanitises what it reads (non-arrays, entries
+without string `city`/`code`, non-string names). Verified by planting a malformed entry: before the
+fix the app crash-looped, after it the app loads. Apply the same rule to any new persisted state.
 
 ---
 
@@ -220,6 +315,10 @@ centre down by half the hidden height rather than centring on the target.
   is a one-file fix.
 - User-facing strings live in `web/src/i18n.js` and must be added in **both** `el` and `en`. Greek is
   the default; the language is also passed to the API so stop and line names translate.
+- City names are the exception: citybus.gr publishes them only in Greek, so English names come from
+  `CITY_NAMES_EN` in `i18n.js`, keyed by slug. Always render a city with `cityName(city, lang)`.
+  A city the table does not know falls back to its title-cased slug, so a new city on the platform
+  still shows a readable name — add it to the table when you notice one.
 
 ## File map
 
@@ -233,10 +332,12 @@ web/src/
   App.jsx      state orchestration; owns city/lang/selectedStop/panTarget/sheet mode
   api.js       thin fetch wrappers over /api
   geo.js       haversine distance, nearest-stops sort, distance formatting
-  i18n.js      el/en strings
+  i18n.js      el/en strings, English city names
   storage.js   localStorage guarded against private-mode throws
-  components/  StopMap · StopSheet · HomePanel · SettingsSheet
-  hooks/       useStops · useLiveArrivals · useGeolocation · useFavourites · usePersistentState
+  main.jsx     mounts App inside ErrorBoundary
+  components/  StopMap · StopSheet · HomePanel · SettingsSheet · ErrorBoundary · Icon (inline SVGs)
+  hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useGeolocation
+               useSheetDrag · useFavourites · usePersistentState
 ```
 
 ## Verifying changes
@@ -249,10 +350,15 @@ curl -s localhost:3000/api/irakleio/stops | python3 -c "import json,sys;print(le
 
 Expected results:
 
-- `/api/cities` → 30 · `/api/irakleio/stops` → 496 · `/api/chania/stops` → 474 · `/api/patra/stops` → 813
+- `/api/cities` → 30 · `/api/irakleio/stops` → 547 · `/api/chania/stops` → 483 · `/api/patra/stops` → 847
+- `/api/irakleio/stops?lang=en` → no stop with a null `name` (quirk 3)
 - `/api/irakleio/stops/0122/live` → live vehicles (`0122` is a busy central stop, good for testing)
 - `/api/irakleio/stops/9999/live` → `{"vehicles":[],"noService":true}`
-- `/api/evil.com/stops` → 400, `/api/irakleio/stops/..%2f..%2fetc/live` → 400
+- `/api/irakleio/stops/0122/schedule` → 8 departures with `time` ≥ the current Athens time
+- `/api/irakleio/lines/06/routes/21009/shape` → 200, ~2.4 KB · an unknown route → 404
+- `/api/nosuchcity/stops` → 404, not 502
+- `/api/evil.com/stops` → 400, `/api/irakleio/stops/..%2f..%2fetc/live` → 400 (same for `/schedule`),
+  `/api/irakleio/lines/..%2f06/routes/1/shape` → 400
 - **Any-city check:** request a city never used before; it must work with no code change. That is the
   auto-discovery guarantee and it is easy to break.
 
@@ -260,8 +366,18 @@ Token refresh (the path that otherwise only fails in 48 hours): stop the server,
 signature of a token in `server/.cache/sites.json` while leaving its `exp` intact, restart, and
 request live arrivals. It must return data — one refresh, one retry, no loop.
 
-Front end: `cd web && npm run build`, then load `localhost:3000` and confirm the map frames the city,
-a stop opens with arrivals, and buses appear as coloured markers.
+Front end: `cd web && npm run build`, then load `localhost:3000` at phone size and confirm:
+- the map frames the city
+- a stop opens with arrivals and lands in the visible band, not under the sheet
+- buses appear as coloured markers and glide after each poll
+- tapping an arrival collapses the sheet, draws the route and frames the bus and the stop
+- dragging the map collapses the sheet, and the handle and header drag it both ways
+- the English city picker shows English names, sorted
+
+Two traps for automated browsers: a page that is **not visible** gets no `requestAnimationFrame`, so
+`flyTo` stalls on its first frame and a pending fit fires later, which looks like a pan bug and is
+not. And geolocation is usually denied, so test the watch by replacing `navigator.geolocation` with a
+fake before pressing locate.
 
 ## Releasing
 
@@ -301,8 +417,12 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
   against the live instance at <https://bus.ginet.vip>. Note that service workers and geolocation
   need a secure context, so this only holds over HTTPS — a reverse proxy must force SSL, or users
   arriving over plain HTTP silently lose both.
-- **Not built, endpoints confirmed working:** route polylines on the map, timetables, line browsing.
-  All additive — see the endpoint table.
+- **Timetables are built only as the empty-live fallback** (`/schedule`). A full day view is a small
+  step from `getDayTimetable`.
+- **Route lines are built for the tapped bus only.** Showing every route through a stop, or a line
+  browser, is additive — `/shape` and `/lines` already exist.
+- **Not built, endpoint confirmed working:** `/routes/{route}/sequence` (a route's ordered stops),
+  which would let a tapped bus show the stops it has left before this one.
 - **HTTPS is required in production**, not cosmetic: PWA install and geolocation both need a secure
   context. `localhost` is exempt, so development needs nothing.
 - **OSM tile policy:** the public tile servers ask that heavy apps not use them. `TILE_URL` is a
