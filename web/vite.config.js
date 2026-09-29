@@ -60,12 +60,21 @@ export default defineConfig({
             },
           },
           {
+            // Only status 200: an opaque (status 0) response counts as 6–11 MB of
+            // storage in Chrome however small the tile is. Tiles are requested with
+            // CORS (see StopMap), so a 0 here means something is wrong — pass it
+            // through rather than cache it. Renamed from 'osm-tiles', which held
+            // opaque tiles; main.jsx deletes that one.
             urlPattern: ({ url }) => url.hostname.endsWith('tile.openstreetmap.org'),
             handler: 'CacheFirst',
             options: {
-              cacheName: 'osm-tiles',
-              expiration: { maxEntries: 600, maxAgeSeconds: 7 * 24 * 60 * 60 },
-              cacheableResponse: { statuses: [0, 200] },
+              cacheName: 'osm-tiles-v2',
+              expiration: {
+                maxEntries: 600,
+                maxAgeSeconds: 7 * 24 * 60 * 60,
+                purgeOnQuotaError: true,
+              },
+              cacheableResponse: { statuses: [200] },
             },
           },
         ],

@@ -16,10 +16,12 @@ configuration — the app discovers each one by itself.
 
 - **Map of every stop** in the city, tap one to open it.
 - **Live arrivals** — line, destination and minutes, refreshed every 15 seconds.
-- **Timetable fallback** — when no bus is due in the next 30 minutes, shows the next scheduled
-  departures instead, rolling into tomorrow's first buses late at night.
+- **Timetable** — the next scheduled departures, rolling into tomorrow's first buses late at night.
+  Shown on its own when no bus is due in the next 30 minutes, opened by itself at a quiet stop, and
+  one tap away at a busy one.
 - **Buses on the map**, coloured by line, gliding smoothly between updates.
-- **Tap a bus to follow it** — draws its route on the map and frames the bus together with your stop.
+- **Tap a bus to follow it** — draws its route on the map and frames the bus together with your stop;
+  **Back** returns to every bus due there.
 - **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
   of the next buses, and see the whole map.
 - **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk.

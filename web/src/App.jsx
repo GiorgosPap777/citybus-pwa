@@ -9,12 +9,12 @@ import Icon from './components/Icon.jsx';
 import { fetchCities, fetchConfig } from './api.js';
 import { useStops } from './hooks/useStops.js';
 import { useLiveArrivals } from './hooks/useLiveArrivals.js';
-import { useSchedule } from './hooks/useSchedule.js';
+import { useSchedule, useTimetableShown } from './hooks/useSchedule.js';
 import { useRouteShape } from './hooks/useRouteShape.js';
 import { useGeolocation } from './hooks/useGeolocation.js';
 import { useFavourites } from './hooks/useFavourites.js';
 import { usePersistentState } from './hooks/usePersistentState.js';
-import { useSheetDrag } from './hooks/useSheetDrag.js';
+import { useSheetCollapse, useSheetDrag } from './hooks/useSheetDrag.js';
 import { cityName, translator } from './i18n.js';
 
 export default function App() {
@@ -27,11 +27,11 @@ export default function App() {
   const [selectedStop, setSelectedStop] = useState(null);
   const [panTarget, setPanTarget] = useState(null);
   const [sheet, setSheet] = useState('home'); // 'home' | 'stop' | 'settings'
-  const [collapsed, setCollapsed] = useState(false);
   // The bus whose route is drawn: { vehicleCode, lineCode, routeCode, color }.
   const [focus, setFocus] = useState(null);
 
   const sheetRef = useRef(null);
+  const [collapsed, setCollapsed] = useSheetCollapse(sheetRef);
   const panToNextFix = useRef(false);
 
   const city = savedCity ?? config?.defaultCity ?? 'irakleio';
@@ -61,15 +61,22 @@ export default function App() {
     refresh,
   } = useLiveArrivals(city, lang, selectedStop?.code);
 
-  // Live data only reaches 30 minutes ahead; when it is empty, the timetable is
-  // the only way to say when the next bus is.
-  const schedule = useSchedule(city, lang, selectedStop?.code, arrivals?.vehicles.length === 0);
+  // Live data only reaches 30 minutes ahead, so the timetable answers what it
+  // cannot: always when no bus is due, and on request (or at a quiet stop) otherwise.
+  const [timetableShown, toggleTimetable] = useTimetableShown(
+    selectedStop ? `${city}:${selectedStop.code}` : null,
+    arrivals ? arrivals.vehicles.length : null,
+  );
+  const schedule = useSchedule(city, lang, selectedStop?.code, timetableShown);
   const routePoints = useRouteShape(city, focus?.lineCode, focus?.routeCode);
 
-  const openSheet = useCallback((name) => {
-    setSheet(name);
-    setCollapsed(false);
-  }, []);
+  const openSheet = useCallback(
+    (name) => {
+      setSheet(name);
+      setCollapsed(false);
+    },
+    [setCollapsed],
+  );
 
   const { gripProps, onHandleClick } = useSheetDrag(sheetRef, collapsed, setCollapsed);
 
@@ -123,25 +130,36 @@ export default function App() {
       }
       setPanTarget({ bounds, at: Date.now() });
     },
-    [selectedStop],
+    [selectedStop, setCollapsed],
   );
+
+  // Undoes focusVehicle: the full list again, and the stop back in view.
+  const unfocusVehicle = useCallback(() => {
+    setFocus(null);
+    setCollapsed(false);
+    if (Number.isFinite(selectedStop?.latitude) && Number.isFinite(selectedStop?.longitude)) {
+      setPanTarget({ lat: selectedStop.latitude, lon: selectedStop.longitude, at: Date.now() });
+    }
+  }, [selectedStop, setCollapsed]);
 
   // Dragging the map means the user wants to look at it; the settings sheet is
   // the exception, since it is modal in spirit.
   const onMapDrag = useCallback(() => {
     if (sheet !== 'settings') setCollapsed(true);
-  }, [sheet]);
+  }, [sheet, setCollapsed]);
 
   // An open stop grows as its arrivals load, after any pan has already been
   // planned against the short loading state — which left the stop just above the
   // sheet and then under it. So while a stop is expanded, plan for the height the
   // sheet can reach. Read from the DOM, which is committed before the map's
   // effects run, so this stays stable and never re-triggers a pan by itself.
+  // Mid-collapse the height is animating, so use the one it is heading for.
   const getBottomInset = useCallback(() => {
     const el = sheetRef.current;
     if (!el) return undefined;
-    if (el.dataset.mode !== 'stop' || el.classList.contains('collapsed')) return el.offsetHeight;
-    return Math.max(el.offsetHeight, parseFloat(getComputedStyle(el).maxHeight) || 0);
+    const height = Number(el.dataset.restHeight) || el.offsetHeight;
+    if (el.dataset.mode !== 'stop' || el.classList.contains('collapsed')) return height;
+    return Math.max(height, parseFloat(getComputedStyle(el).maxHeight) || 0);
   }, []);
 
   // The position is watched continuously, so the map must not follow every fix —
@@ -259,6 +277,8 @@ export default function App() {
             stop={selectedStop}
             arrivals={arrivals}
             schedule={schedule}
+            timetableShown={timetableShown}
+            onToggleTimetable={toggleTimetable}
             loading={arrivalsLoading}
             error={arrivalsError}
             refreshing={refreshing}
@@ -268,6 +288,7 @@ export default function App() {
             onToggleFavourite={() => favourites.toggle(city, selectedStop)}
             focusedVehicle={focus?.vehicleCode}
             onFocusVehicle={focusVehicle}
+            onUnfocus={unfocusVehicle}
             collapsed={collapsed}
             gripProps={gripProps}
             t={t}

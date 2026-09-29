@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
+
+const prefersReducedMotion = () =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 function Ago({ fetchedAt, t }) {
   const [, force] = useState(0);
@@ -46,12 +49,38 @@ function Eta({ minutes, t }) {
  * What a collapsed sheet still shows: the next buses as chips, so the map can
  * have the screen without the user losing the minute counts. Scrolls sideways
  * when there are more than fit.
+ *
+ * While a bus is followed, a Back chip leads the row. Following a bus collapses
+ * the sheet, and the only way back to the full list was to know the header
+ * expands it — users did not, and closed the stop instead.
  */
-function Peek({ vehicles, loading, focusedVehicle, onFocusVehicle, t }) {
+function Peek({ vehicles, loading, focusedVehicle, onFocusVehicle, onUnfocus, t }) {
   if (loading) return null;
-  if (!vehicles.length) return <p className="hint">{t('noService')}</p>;
+  const back = focusedVehicle && (
+    <button
+      type="button"
+      className="peek-chip back"
+      onClick={onUnfocus}
+      aria-label={t('backToArrivals')}
+      title={t('backToArrivals')}
+    >
+      <Icon name="chevronLeft" size={16} />
+      {t('back')}
+    </button>
+  );
+  if (!vehicles.length) {
+    return back ? (
+      <div className="peek">
+        {back}
+        <p className="hint">{t('noService')}</p>
+      </div>
+    ) : (
+      <p className="hint">{t('noService')}</p>
+    );
+  }
   return (
     <div className="peek">
+      {back}
       {vehicles.map((vehicle) => {
         const focused = vehicle.vehicleCode === focusedVehicle;
         return (
@@ -72,9 +101,69 @@ function Peek({ vehicles, loading, focusedVehicle, onFocusVehicle, t }) {
   );
 }
 
-function ScheduleList({ schedule, t }) {
-  if (schedule.loading) return <p className="state">{t('loading')}</p>;
-  if (schedule.error || !schedule.data) return null;
+/**
+ * The next timetabled departures. Alone (no live buses) it is the main content
+ * and always open. Beside live arrivals it is optional, so its heading becomes a
+ * toggle: one line when closed, which is all the space a busy stop can spare.
+ */
+function ScheduleList({ schedule, open = true, onToggle, t }) {
+  const sectionRef = useRef(null);
+  const reveal = useRef(false);
+
+  // Opened from the bottom of a long list, the times land below the fold and the
+  // toggle looks like it did nothing. Scroll just far enough to show the first
+  // few: revealing the whole section would push every live bus out of view.
+  const hasData = !!schedule.data;
+  useEffect(() => {
+    if (!reveal.current || !open || !hasData) return;
+    reveal.current = false;
+    const rows = sectionRef.current?.querySelectorAll('li');
+    const target = rows?.length ? rows[Math.min(2, rows.length - 1)] : sectionRef.current;
+    target?.scrollIntoView({
+      block: 'nearest',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    });
+  }, [open, hasData]);
+
+  const head = onToggle ? (
+    <h3 className="section-head">
+      <button
+        type="button"
+        className="section-toggle"
+        onClick={() => {
+          reveal.current = !open;
+          onToggle();
+        }}
+        aria-expanded={open}
+      >
+        <Icon name="clock" size={15} />
+        <span>{t('timetable')}</span>
+        <Icon name="chevronDown" size={16} />
+      </button>
+    </h3>
+  ) : (
+    <h3 className="section-head">{t('scheduledHead')}</h3>
+  );
+
+  if (!open) return <section>{head}</section>;
+  if (schedule.loading) {
+    return (
+      <section>
+        {onToggle && head}
+        <p className="state">{t('loading')}</p>
+      </section>
+    );
+  }
+  if (schedule.error || !schedule.data) {
+    // Alone, a failed timetable says nothing rather than add a second error to
+    // "no buses"; behind its toggle, the user asked for it and gets an answer.
+    return onToggle ? (
+      <section>
+        {head}
+        <p className="hint">{t('error')}</p>
+      </section>
+    ) : null;
+  }
 
   // The list was computed when fetched; drop what has left since, rather than
   // refetching, while the sheet stays open.
@@ -82,8 +171,8 @@ function ScheduleList({ schedule, t }) {
   const departures = schedule.data.departures.filter((d) => d.departsAt >= now - 60_000);
 
   return (
-    <section>
-      <h3 className="section-head">{t('scheduledHead')}</h3>
+    <section ref={sectionRef}>
+      {head}
       {departures.length === 0 ? (
         <p className="hint">{t('noScheduled')}</p>
       ) : (
@@ -113,6 +202,8 @@ export default function StopSheet({
   stop,
   arrivals,
   schedule,
+  timetableShown,
+  onToggleTimetable,
   loading,
   error,
   refreshing,
@@ -122,6 +213,7 @@ export default function StopSheet({
   onToggleFavourite,
   focusedVehicle,
   onFocusVehicle,
+  onUnfocus,
   collapsed,
   gripProps,
   t,
@@ -161,6 +253,7 @@ export default function StopSheet({
           loading={loading}
           focusedVehicle={focusedVehicle}
           onFocusVehicle={onFocusVehicle}
+          onUnfocus={onUnfocus}
           t={t}
         />
       ) : (
@@ -211,6 +304,15 @@ export default function StopSheet({
                 );
               })}
             </ul>
+          )}
+
+          {vehicles.length > 0 && (
+            <ScheduleList
+              schedule={schedule}
+              open={timetableShown}
+              onToggle={onToggleTimetable}
+              t={t}
+            />
           )}
 
           {arrivals?.fetchedAt && (

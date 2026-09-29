@@ -37,6 +37,17 @@ const GLIDE_MS = 1500;
 // would sweep a bus across town.
 const MAX_GLIDE_M = 1500;
 
+// A stop is drawn 10px wide, and Leaflet only counts a tap inside that circle: a
+// target under 12px, for a fingertip that is ~40px and lands a few px off. Taps
+// that narrowly missed did nothing. A tap this close to a stop now selects the
+// nearest one, which makes each stop a ~44px target without drawing it bigger.
+const TAP_REACH_PX = 22;
+
+// Leaflet turns a press into a map drag once the pointer moves 3px, and a drag is
+// never a tap, so a finger's natural wobble lost the tap — and, since dragging the
+// map collapses the sheet, hid the panel as well. Fingers need more slack.
+L.Draggable.mergeOptions({ clickTolerance: 8 });
+
 const escapeHtml = (value) =>
   String(value).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
@@ -179,6 +190,30 @@ function OnUserDrag({ onDrag }) {
   return null;
 }
 
+/**
+ * Selects the stop nearest a tap that missed every stop's circle. A tap inside a
+ * circle is handled by that stop: canvas hits are not passed on to the map.
+ */
+function TapNearestStop({ stops, onSelectStop }) {
+  const map = useMapEvents({
+    click(e) {
+      let nearest = null;
+      let best = TAP_REACH_PX;
+      for (const stop of stops) {
+        const distance = map
+          .latLngToContainerPoint([stop.latitude, stop.longitude])
+          .distanceTo(e.containerPoint);
+        if (distance <= best) {
+          nearest = stop;
+          best = distance;
+        }
+      }
+      if (nearest) onSelectStop(nearest);
+    },
+  });
+  return null;
+}
+
 /** A marker that glides to each new position instead of jumping to it. */
 function GlidingMarker({ position, ...props }) {
   const markerRef = useRef(null);
@@ -273,12 +308,17 @@ export default function StopMap({
       zoomControl={false}
       preferCanvas
     >
-      <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={19} />
+      {/* crossOrigin is what keeps the tile cache small. Without it a tile is fetched
+          no-cors, the service worker stores an opaque response, and Chrome counts
+          each one as 6–11 MB of site storage (measured) — a few hundred tiles showed
+          up as 1.5 GB. Any replacement for TILE_URL must send CORS headers. */}
+      <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} maxZoom={19} crossOrigin />
 
       <KeepSizeInSync />
       <FitToStops stops={stops} cityKey={cityKey} getBottomInset={getBottomInset} />
       <PanTo target={panTarget} getBottomInset={getBottomInset} />
       <OnUserDrag onDrag={onUserDrag} />
+      <TapNearestStop stops={stops} onSelectStop={onSelectStop} />
 
       {/* Below the stops' pane (400), so the route line never hides a stop. */}
       <Pane name="beneath-stops" style={{ zIndex: 390 }}>

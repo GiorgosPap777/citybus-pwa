@@ -321,6 +321,27 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
   color: var(--muted);
 }
 
+/* The timetable's heading beside live arrivals, where it is a toggle. Accent
+   coloured and full width, so it reads as a control and the whole line is the target. */
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.section-toggle svg:last-child { margin-left: auto; transition: transform 0.2s ease-out; }
+.section-toggle[aria-expanded='true'] svg:last-child { transform: rotate(180deg); }
+.section-head:has(.section-toggle) { margin: 6px 0 0; }
+
 .stop-row {
   display: flex;
   align-items: center;
@@ -394,6 +415,8 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
   cursor: pointer;
 }
 .peek-chip.on { border-color: var(--accent); background: var(--accent-bg); }
+.peek-chip.back { gap: 2px; padding: 5px 12px 5px 6px; color: var(--accent); font-weight: 600; }
+.peek .hint { align-self: center; white-space: nowrap; }
 .peek-chip .line-badge { min-width: 36px; padding: 3px 6px; font-size: 12px; }
 .peek-chip .eta { min-width: 0; font-size: 16px; }
 .peek-chip .eta.now { font-size: 13px; }
@@ -494,4 +517,5 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .dot-pulse { animation: none; }
   .sheet { transition: none; }
+  .section-toggle svg:last-child { transition: none; }
 }

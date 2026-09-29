@@ -169,9 +169,11 @@ downloaded once a week per device, not once per tap.
 
 `/schedule` returns the next 8 timetabled departures from now, rolling into tomorrow when today runs
 out. Each has `time` (`"HH:MM"`), `departsAt` (epoch ms, so the client can drop departures as they
-pass without refetching), `tomorrow`, and the line fields. The UI requests it **only when live arrivals
-are empty** — it answers "when is the next bus?" where live data (30 minutes ahead) cannot. Like
-`/live` it is `no-store`, and the service worker treats it as `NetworkOnly`: a cached "next departures"
+pass without refetching), `tomorrow`, and the line fields. It answers "when is the next bus?" where
+live data (30 minutes ahead) cannot, so it is **always shown when live arrivals are empty**. Beside live
+buses it sits behind a one-line toggle, open by default at a stop with 3 or fewer live buses
+(`useTimetableShown`), and is requested only while shown, so opening a busy stop costs nothing extra.
+Like `/live` it is `no-store`, and the service worker treats it as `NetworkOnly`: a cached "next departures"
 list lists buses long gone.
 
 `agencyCode` in `/api/cities` is `null` until that city has actually been used. Resolving all 30
@@ -217,7 +219,7 @@ Three things keep it correct, all of which look redundant and are not:
 
 Verified: pure polling is 2 requests per 33 seconds. Keep it that way.
 
-### 3. `useStops` withholds stops from a previous city
+### 3. `useStops` and `useLiveArrivals` withhold data from a previous city or stop
 
 Observed bug: switching city left the map framed on the old city forever.
 
@@ -228,6 +230,12 @@ tick the hook still held the previous city's stops. `StopMap` framed itself on t
 The fix is at the source: `useStops` compares `state.city`/`state.lang` against the requested ones
 and returns `[]` plus `loading: true` when they disagree. Do not "optimise" that check away — and
 prefer this shape over patching consumers, since any other consumer of stale stops has the same bug.
+
+`useLiveArrivals` has the same tick when switching stop, so it keys its state the same way
+(`city:lang:stop`). Unkeyed, going from a 4-bus stop straight to a 3-bus one renders the new stop with
+the old stop's four buses, and the timetable's default is settled from that count — closed, where 3
+buses should open it. Verified keyed: the new stop's first render is its loading state, and the
+timetable opens. `useSchedule` and `useRouteShape` are keyed for the same reason.
 
 ### 4. Leaflet size handling in `web/src/components/StopMap.jsx`
 
@@ -272,6 +280,14 @@ a bus, or dragging the map. It expands again on a tap or an upward drag.
 - The handle is 32px tall with **no margin**. A margin between handle and header was a strip that
   answered neither taps nor drags; a drag starting there did nothing.
 - Map drags collapse the sheet, except the settings sheet, which is modal in spirit.
+- The change is animated by `useSheetCollapse`. Collapsing swaps the content, so the height changed in
+  one frame; the hook records the top edge before the change (a drag offset included) and animates
+  `height` from there once the new content is laid out. Height, not transform: translating a
+  shrinking, bottom-anchored sheet opens a gap. While it runs, `data-rest-height` holds the height it
+  is heading for, which `getBottomInset` reads so the map does not frame against a mid-animation size.
+- Tapping a bus collapses the sheet, so the peek then leads with a **Back** chip. Reported: there was
+  no clear way back from a bus to the stop's list — only knowing that the header expands the sheet.
+  Back clears the focused bus, expands the sheet and returns the map to the stop.
 
 ### 7. Moving buses and the map's render cost (`StopMap.jsx`)
 
@@ -300,6 +316,40 @@ button, in the saved language. A reload cannot escape a crash caused by **saved 
 data is read again on every launch. So `useFavourites` sanitises what it reads (non-arrays, entries
 without string `city`/`code`, non-string names). Verified by planting a malformed entry: before the
 fix the app crash-looped, after it the app loads. Apply the same rule to any new persisted state.
+
+### 10. Map tiles are fetched with CORS (`crossOrigin` on `TileLayer`, `osm-tiles-v2`)
+
+Observed bug (1.1.0): a phone showed **1.5 GB of site data** for this app. Leaflet loads tiles as
+plain `<img>` elements, which fetch cross-origin in `no-cors` mode, so the service worker cached
+**opaque** responses. To avoid leaking cross-origin sizes, Chrome counts every opaque response as
+6–11 MB of quota, whatever its real size (measured: 5 tiles totalling 108 KB registered as 55 MB).
+The 600-entry tile cache could therefore report ~6 GB, pushing the origin toward eviction.
+
+- `crossOrigin` on the `TileLayer` makes tiles CORS requests. OSM answers with
+  `access-control-allow-origin: *`, so responses are normal and counted at their real size.
+- The tile cache accepts **status 200 only**, never 0, so an opaque tile is passed through rather
+  than cached if this ever regresses. `purgeOnQuotaError` is the backstop.
+- The cache was renamed `osm-tiles-v2`, and `main.jsx` deletes the old `osm-tiles` on every start.
+  That line can go once no installed copy older than 1.2.0 is likely to be opened.
+
+**Any replacement for `TILE_URL` must send CORS headers.** With `crossOrigin` set, a tile server that
+does not will fail to load tiles at all, rather than silently caching them opaque. Check with
+`curl -sI -H 'Origin: https://example.com' <tile url> | grep -i access-control`.
+
+### 11. Stop taps have slack (`TAP_REACH_PX`, `clickTolerance`, `StopMap.jsx`)
+
+Reported problem: stops were hard to select, for more than one person. Two causes, both fixed:
+
+- A stop is a 10px circle, and Leaflet counts a canvas hit only inside it (plus a few px): a target
+  under 12px for a fingertip. `TapNearestStop` handles taps that miss every circle and selects the
+  nearest stop within `TAP_REACH_PX` (22px), which makes each stop a ~44px target without drawing it
+  bigger. A tap inside a circle is handled by that stop; canvas hits do not reach the map's `click`.
+  Bus markers are DOM markers with `bubblingMouseEvents: false`, so a tap on a bus never selects the
+  stop beneath it.
+- Leaflet turns a press into a map drag after 3px of movement, and a drag is never a tap — so a
+  finger's wobble lost the tap and, because map drags collapse the sheet, hid the panel too.
+  `L.Draggable.mergeOptions({ clickTolerance: 8 })` gives fingers room. It is a module-level default,
+  so it applies to every draggable, which is intended.
 
 ---
 
@@ -371,7 +421,12 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - a stop opens with arrivals and lands in the visible band, not under the sheet
 - buses appear as coloured markers and glide after each poll
 - tapping an arrival collapses the sheet, draws the route and frames the bus and the stop
-- dragging the map collapses the sheet, and the handle and header drag it both ways
+- the collapsed peek then leads with Back, which expands the list and returns the map to the stop
+- dragging the map collapses the sheet, and the handle and header drag it both ways; collapsing and
+  expanding animate rather than jump
+- a tap ~15px beside a stop opens it; a tap far from any stop does nothing; a tap on a bus focuses it
+- a stop with more than 3 live buses shows a closed timetable toggle and makes no `/schedule` request;
+  one with 3 or fewer opens it; opening it at the bottom of a long list scrolls the first times into view
 - the English city picker shows English names, sorted
 
 Two traps for automated browsers: a page that is **not visible** gets no `requestAnimationFrame`, so
@@ -388,8 +443,8 @@ building, so deploying is a pull, not a build on the target host.
 To cut a release:
 
 ```bash
-docker build -t giorgospap777/citybus-pwa:1.1.0 -t giorgospap777/citybus-pwa:latest .
-docker push giorgospap777/citybus-pwa:1.1.0
+docker build -t giorgospap777/citybus-pwa:1.2.0 -t giorgospap777/citybus-pwa:latest .
+docker push giorgospap777/citybus-pwa:1.2.0
 docker push giorgospap777/citybus-pwa:latest
 ```
 
@@ -399,7 +454,7 @@ Before pushing, run the image and check it end to end — the build succeeding p
 on its own:
 
 ```bash
-docker run -d --name citybus-test -p 3200:3000 giorgospap777/citybus-pwa:1.1.0
+docker run -d --name citybus-test -p 3200:3000 giorgospap777/citybus-pwa:1.2.0
 curl -s localhost:3200/api/health                          # {"ok":true}
 curl -s localhost:3200/api/irakleio/stops/0122/live        # real vehicles
 curl -sI localhost:3200/api/irakleio/stops/0122/live | grep -i cache-control   # must be no-store
@@ -417,8 +472,11 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
   against the live instance at <https://bus.ginet.vip>. Note that service workers and geolocation
   need a secure context, so this only holds over HTTPS — a reverse proxy must force SSL, or users
   arriving over plain HTTP silently lose both.
-- **Timetables are built only as the empty-live fallback** (`/schedule`). A full day view is a small
-  step from `getDayTimetable`.
+- **Timetables show the next 8 departures only** (`/schedule`): alone when no bus is live, behind a
+  toggle otherwise. A full day view is a small step from `getDayTimetable`.
+- **The system back button is not handled.** In an installed PWA, Android's back gesture closes the
+  app rather than leaving a focused bus or an open stop. Doing that means pushing history entries for
+  those states and undoing them on `popstate`.
 - **Route lines are built for the tapped bus only.** Showing every route through a stop, or a line
   browser, is additive — `/shape` and `/lines` already exist.
 - **Not built, endpoint confirmed working:** `/routes/{route}/sequence` (a route's ordered stops),
@@ -426,6 +484,7 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
 - **HTTPS is required in production**, not cosmetic: PWA install and geolocation both need a secure
   context. `localhost` is exempt, so development needs nothing.
 - **OSM tile policy:** the public tile servers ask that heavy apps not use them. `TILE_URL` is a
-  constant in `StopMap.jsx` for exactly this reason.
+  constant in `StopMap.jsx` for exactly this reason. A replacement must send CORS headers — see
+  load-bearing decision 10.
 - This is an **unofficial** client of a public API. Treat the upstream as something to be gentle
   with; that is the reasoning behind the caching, and it should survive refactors.
