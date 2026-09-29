@@ -351,6 +351,30 @@ Reported problem: stops were hard to select, for more than one person. Two cause
   `L.Draggable.mergeOptions({ clickTolerance: 8 })` gives fingers room. It is a module-level default,
   so it applies to every draggable, which is intended.
 
+### 12. The system back button (`web/src/hooks/useBackButton.js`)
+
+A single-page app has no history of its own, so in an installed PWA Android's back gesture closed the
+app from anywhere: an open stop, a followed bus, the settings sheet. Back now steps out of those one
+at a time and leaves the app only from the home panel.
+
+- One history entry per open layer (settings, a followed bus, a stop), with state
+  `{citybusLayer: n}`. `App.jsx` counts the layers and closes them topmost first (`closeLayersTo`).
+- Entries are pushed **when a layer opens**, from the tap that opened it, never in response to
+  `popstate`. Chrome's back button skips an entry that pushed another without a user gesture in
+  between. Observed: one guard entry re-pushed after each pop made the second back press find no
+  history, and in an installed app that closes it.
+- A layer closed in the UI (✕, the Back chip, picking a city) pops its entries with `history.go()`.
+  Left in place, they would make the next back presses do nothing.
+- `popstate` closes layers only when it lands **below** the open depth; a pop the app made itself
+  lands exactly on it. This is a comparison rather than an "ignore the next pop" flag. Picking a city
+  while following a bus closes three layers over two renders, which is two pops (observed), and a
+  flag left set by a pop that never arrived would swallow the user's next back.
+- A reload lands on the current entry, layer count and all, but without the layers. Android reloads
+  an installed app whenever it restores one it discarded in the background. So the module rewinds to
+  the base entry at load. Relabelling the stale entry instead was tried: the first back after a
+  reload then did nothing visible. The rewind runs at module level, once per load. In an effect,
+  StrictMode would run it twice in development, and the second rewind would leave the app.
+
 ---
 
 ## Conventions
@@ -387,7 +411,7 @@ web/src/
   main.jsx     mounts App inside ErrorBoundary
   components/  StopMap · StopSheet · HomePanel · SettingsSheet · ErrorBoundary · Icon (inline SVGs)
   hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useGeolocation
-               useSheetDrag · useFavourites · usePersistentState
+               useSheetDrag · useFavourites · usePersistentState · useBackButton
 ```
 
 ## Verifying changes
@@ -428,11 +452,20 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - a stop with more than 3 live buses shows a closed timetable toggle and makes no `/schedule` request;
   one with 3 or fewer opens it; opening it at the bottom of a long list scrolls the first times into view
 - the English city picker shows English names, sorted
+- back steps out one layer at a time (settings, then a followed bus, then the stop) and then leaves;
+  after closing a layer with ✕ or the Back chip, the next back still does something
+- after a reload with a stop open, a single back leaves the app
 
-Two traps for automated browsers: a page that is **not visible** gets no `requestAnimationFrame`, so
-`flyTo` stalls on its first frame and a pending fit fires later, which looks like a pan bug and is
-not. And geolocation is usually denied, so test the watch by replacing `navigator.geolocation` with a
-fake before pressing locate.
+Traps for automated browsers:
+- A page that is **not visible** gets no `requestAnimationFrame`, so `flyTo` stalls on its first
+  frame and a pending fit fires later. That looks like a pan bug and is not.
+- Geolocation is usually denied, so test the watch by replacing `navigator.geolocation` with a fake
+  before pressing locate.
+- A browser that has loaded the app before keeps its service worker, which serves **the old build's
+  bundle**. Unregister it and clear the caches, then open a new tab.
+- Test the back button by navigating back in the browser, not by calling `history.back()`. The
+  browser's own back applies Chrome's entry-skipping rule, which is the thing under test; a script
+  call may not.
 
 ## Releasing
 
@@ -474,9 +507,9 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
   arriving over plain HTTP silently lose both.
 - **Timetables show the next 8 departures only** (`/schedule`): alone when no bus is live, behind a
   toggle otherwise. A full day view is a small step from `getDayTimetable`.
-- **The system back button is not handled.** In an installed PWA, Android's back gesture closes the
-  app rather than leaving a focused bus or an open stop. Doing that means pushing history entries for
-  those states and undoing them on `popstate`.
+- **The back button is verified in desktop Chromium only**, using the browser's own back, not yet
+  with the gesture in an installed app on a phone. Back never returns to a previous stop: opening a
+  second stop replaces the first rather than stacking. Forward, on desktop, reopens nothing.
 - **Route lines are built for the tapped bus only.** Showing every route through a stop, or a line
   browser, is additive — `/shape` and `/lines` already exist.
 - **Not built, endpoint confirmed working:** `/routes/{route}/sequence` (a route's ordered stops),

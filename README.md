@@ -24,6 +24,8 @@ configuration — the app discovers each one by itself.
   **Back** returns to every bus due there.
 - **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
   of the next buses, and see the whole map.
+- **Back works like an app** — the phone's back gesture closes settings, stops following a bus, then
+  closes the stop, and only then leaves the app.
 - **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk.
 - **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ`.
 - **Favourites** — save your home and work stops; they open first, no map needed.

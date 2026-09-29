@@ -15,6 +15,7 @@ import { useGeolocation } from './hooks/useGeolocation.js';
 import { useFavourites } from './hooks/useFavourites.js';
 import { usePersistentState } from './hooks/usePersistentState.js';
 import { useSheetCollapse, useSheetDrag } from './hooks/useSheetDrag.js';
+import { useBackButton } from './hooks/useBackButton.js';
 import { cityName, translator } from './i18n.js';
 
 export default function App() {
@@ -141,6 +142,25 @@ export default function App() {
       setPanTarget({ lat: selectedStop.latitude, lon: selectedStop.longitude, at: Date.now() });
     }
   }, [selectedStop, setCollapsed]);
+
+  // What the back button closes, topmost first, before it is allowed to leave the app.
+  const layers = (selectedStop ? 1 : 0) + (focus ? 1 : 0) + (sheet === 'settings' ? 1 : 0);
+  const closeLayersTo = useCallback(
+    (keep) => {
+      let open = layers;
+      if (open > keep && sheet === 'settings') {
+        openSheet(selectedStop ? 'stop' : 'home');
+        open -= 1;
+      }
+      if (open > keep && focus) {
+        unfocusVehicle();
+        open -= 1;
+      }
+      if (open > keep && selectedStop) closeStop();
+    },
+    [layers, sheet, selectedStop, focus, openSheet, unfocusVehicle, closeStop],
+  );
+  useBackButton(layers, closeLayersTo);
 
   // Dragging the map means the user wants to look at it; the settings sheet is
   // the exception, since it is modal in spirit.
