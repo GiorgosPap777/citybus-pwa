@@ -7,6 +7,7 @@ import { getCities } from './cities.js';
 import {
   getLines,
   getLiveArrivals,
+  getRouteSequence,
   getRouteShape,
   getSchedule,
   getStops,
@@ -57,6 +58,12 @@ app.get('/api/:city/lines/:line/routes/:route/shape', route(async (req, res) => 
   const shape = await getRouteShape(req.params.city, req.params.line, req.params.route);
   res.set('cache-control', 'public, max-age=86400');
   res.json(shape);
+}));
+
+app.get('/api/:city/routes/:route/sequence', route(async (req, res) => {
+  const sequence = await getRouteSequence(req.params.city, req.params.route);
+  res.set('cache-control', 'public, max-age=86400');
+  res.json(sequence);
 }));
 
 app.get('/api/:city/stops/:code/live', route(async (req, res) => {

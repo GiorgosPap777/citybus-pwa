@@ -32,3 +32,6 @@ export const fetchRouteShape = (city, lineCode, routeCode, signal) =>
 
 export const fetchSchedule = (city, lang, stopCode, signal) =>
   getJson(`/api/${city}/stops/${encodeURIComponent(stopCode)}/schedule?lang=${lang}`, signal);
+
+export const fetchRouteSequence = (city, routeCode, signal) =>
+  getJson(`/api/${city}/routes/${encodeURIComponent(routeCode)}/sequence`, signal);

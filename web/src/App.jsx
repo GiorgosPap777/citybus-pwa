@@ -11,19 +11,21 @@ import { useStops } from './hooks/useStops.js';
 import { useLiveArrivals } from './hooks/useLiveArrivals.js';
 import { useSchedule, useTimetableShown } from './hooks/useSchedule.js';
 import { useRouteShape } from './hooks/useRouteShape.js';
+import { useRouteSequence } from './hooks/useRouteSequence.js';
 import { useGeolocation } from './hooks/useGeolocation.js';
 import { useFavourites } from './hooks/useFavourites.js';
 import { usePersistentState } from './hooks/usePersistentState.js';
 import { useSheetCollapse, useSheetDrag } from './hooks/useSheetDrag.js';
 import { useBackButton } from './hooks/useBackButton.js';
-import { cityName, errorMessage, LANGS, translator } from './i18n.js';
+import { asAlertLead, DEFAULT_ALERT_LEAD, useArrivalAlert } from './hooks/useArrivalAlert.js';
+import { routeProgress } from './geo.js';
+import { stopLinkUrl, takeStopLink } from './link.js';
+import { asCity, asLang } from './validate.js';
+import { cityName, errorMessage, translator } from './i18n.js';
 
-// Saved settings are read again on every launch, so a bad value would break every
-// launch; anything unrecognised means "not chosen" instead. Observed: a saved city
-// of 123 crashed the city name, and the error screen's reload crashed again.
-// The slug rule is the server's own (assertSlug).
-const asCity = (value) => (typeof value === 'string' && /^[a-z0-9-]{1,40}$/.test(value) ? value : null);
-const asLang = (value) => (LANGS.includes(value) ? value : null);
+// A shared stop link (/?city=…&stop=…), read before the first render so the app
+// opens on that stop rather than flashing the home panel first.
+const LINK = takeStopLink();
 
 // Stops opened one from another, so back can return through them. Older ones are
 // dropped past this: back is also how an installed app is left, and a dozen
@@ -31,19 +33,35 @@ const asLang = (value) => (LANGS.includes(value) ? value : null);
 const MAX_STOP_TRAIL = 5;
 
 export default function App() {
-  // null means "not chosen yet" — the server's configured default fills in.
-  const [savedCity, setSavedCity] = usePersistentState('citybus.city.v1', null, asCity);
+  // null means "not chosen yet" — the server's configured default fills in. A link's
+  // city is chosen as if picked in settings: a stop shared from a city is almost
+  // always for someone in it.
+  const [savedCity, setSavedCity] = usePersistentState(
+    'citybus.city.v1',
+    null,
+    (value) => LINK?.city ?? asCity(value),
+  );
   const [savedLang, setSavedLang] = usePersistentState('citybus.lang.v1', null, asLang);
+  const [savedAlertLead, setAlertLead] = usePersistentState('citybus.alertLead.v1', null, asAlertLead);
+  const alertLead = savedAlertLead ?? DEFAULT_ALERT_LEAD;
 
   const [config, setConfig] = useState(null);
   const [cities, setCities] = useState([]);
-  // The last stop is the open one.
-  const [stopTrail, setStopTrail] = useState([]);
+  // The last stop is the open one. A linked stop starts with only its code; the
+  // rest arrives with the stop list.
+  const [stopTrail, setStopTrail] = useState(() =>
+    LINK ? [{ code: LINK.stop, name: '', fromLink: true }] : [],
+  );
   const selectedStop = stopTrail.at(-1) ?? null;
   const [panTarget, setPanTarget] = useState(null);
-  const [sheet, setSheet] = useState('home'); // 'home' | 'stop' | 'settings'
+  const [sheet, setSheet] = useState(LINK ? 'stop' : 'home'); // 'home' | 'stop' | 'settings'
   // The bus whose route is drawn: { vehicleCode, lineCode, routeCode, color }.
   const [focus, setFocus] = useState(null);
+  // One arrival alert at a time: { stop, vehicleCode, lineCode, minutes }.
+  const [alert, setAlert] = useState(null);
+  // A short message over the map: { text, kind: 'info' | 'alert', id }.
+  const [toast, setToast] = useState(null);
+  const say = useCallback((text, kind = 'info') => setToast({ text, kind, id: Date.now() }), []);
 
   const sheetRef = useRef(null);
   const [collapsed, setCollapsed] = useSheetCollapse(sheetRef);
@@ -68,13 +86,24 @@ export default function App() {
   const favourites = useFavourites();
   const geo = useGeolocation();
 
+  const alertOnOpenStop = !!alert && alert.stop.code === selectedStop?.code;
   const {
     data: arrivals,
     loading: arrivalsLoading,
     error: arrivalsError,
     refreshing,
     refresh,
-  } = useLiveArrivals(city, lang, selectedStop?.code);
+  } = useLiveArrivals(city, lang, selectedStop?.code, { whileHidden: alertOnOpenStop });
+  const arrivalAlert = useArrivalAlert({
+    alert,
+    setAlert,
+    city,
+    lang,
+    openStopCode: selectedStop?.code,
+    openArrivals: arrivals,
+    say,
+    t,
+  });
 
   // Live data only reaches 30 minutes ahead, so the timetable answers what it
   // cannot: always when no bus is due, and on request (or at a quiet stop) otherwise.
@@ -86,6 +115,16 @@ export default function App() {
   );
   const schedule = useSchedule(city, lang, selectedStop?.code, timetableShown);
   const routePoints = useRouteShape(city, focus?.lineCode, focus?.routeCode);
+  const routeStops = useRouteSequence(city, focus?.routeCode);
+
+  // How far along its route the followed bus is: which stops it has left, and how
+  // many it calls at before this one.
+  const stopsByCode = useMemo(() => new Map(stops.map((s) => [s.code, s])), [stops]);
+  const focusedBus = focus ? arrivals?.vehicles.find((v) => v.vehicleCode === focus.vehicleCode) : null;
+  const progress = useMemo(
+    () => routeProgress(routeStops, stopsByCode, focusedBus, selectedStop?.code),
+    [routeStops, stopsByCode, focusedBus, selectedStop?.code],
+  );
 
   const refreshStop = useCallback(() => {
     refresh();
@@ -102,22 +141,23 @@ export default function App() {
 
   const { gripProps, onHandleClick } = useSheetDrag(sheetRef, collapsed, setCollapsed);
 
-  // A stop from one city is meaningless in another.
+  // A stop from one city is meaningless in another. Only on a change: on the first
+  // render it would close a stop opened from a link.
+  const shownCity = useRef(city);
   useEffect(() => {
+    if (shownCity.current === city) return;
+    shownCity.current = city;
     setStopTrail([]);
     setFocus(null);
+    setAlert(null);
     openSheet('home');
   }, [city, openSheet]);
 
-  // Keep the open stop's details in sync when the language switches. Older stops
-  // in the trail catch up when back returns to them.
   useEffect(() => {
-    if (!selectedStop) return;
-    const fresh = stops.find((s) => s.code === selectedStop.code);
-    if (fresh && fresh.name !== selectedStop.name) {
-      setStopTrail((trail) => [...trail.slice(0, -1), fresh]);
-    }
-  }, [stops, selectedStop]);
+    if (!toast) return undefined;
+    const timer = setTimeout(() => setToast(null), toast.kind === 'alert' ? 10_000 : 4_000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const panToStop = useCallback((stop) => {
     if (Number.isFinite(stop?.latitude) && Number.isFinite(stop?.longitude)) {
@@ -146,6 +186,26 @@ export default function App() {
     setFocus(null);
     openSheet('home');
   }, [openSheet]);
+
+  // Keep the open stop's details in sync when the language switches, and fill in a
+  // linked stop once the stop list arrives. Older stops in the trail catch up when
+  // back returns to them.
+  useEffect(() => {
+    if (!selectedStop) return;
+    const fresh = stops.find((s) => s.code === selectedStop.code);
+    if (!fresh) {
+      // A link to a stop its city does not have: a typo, or a stop since retired.
+      if (selectedStop.fromLink && stops.length) closeStop();
+      return;
+    }
+    if (fresh.name !== selectedStop.name) {
+      setStopTrail((trail) => [
+        ...trail.slice(0, -1),
+        selectedStop.fromLink ? { ...fresh, fromLink: true } : fresh,
+      ]);
+      if (!Number.isFinite(selectedStop.latitude)) panToStop(fresh);
+    }
+  }, [stops, selectedStop, closeStop, panToStop]);
 
   // Back from a stop: the one before it, or home when there is none.
   const returnToStops = useCallback(
@@ -193,8 +253,13 @@ export default function App() {
   }, [selectedStop, setCollapsed]);
 
   // What the back button closes, topmost first, before it is allowed to leave the
-  // app: settings, a followed bus, then each stop in the trail.
-  const layers = stopTrail.length + (focus ? 1 : 0) + (sheet === 'settings' ? 1 : 0);
+  // app: settings, a followed bus, then each stop in the trail. A stop opened from
+  // a link is not a layer: no tap opened it, so it has no history entry (Chrome
+  // skips entries pushed without one; see useBackButton), and back from it leaves,
+  // as back from any linked page does.
+  const linkBase = stopTrail[0]?.fromLink ? 1 : 0;
+  const layers =
+    stopTrail.length - linkBase + (focus ? 1 : 0) + (sheet === 'settings' ? 1 : 0);
   const closeLayersTo = useCallback(
     (keep) => {
       let open = layers;
@@ -250,6 +315,26 @@ export default function App() {
     }
   }, [geo.position]);
 
+  // The system share sheet where there is one (phones), else the clipboard.
+  const shareStop = useCallback(async () => {
+    if (!selectedStop) return;
+    const url = stopLinkUrl(city, selectedStop.code);
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: selectedStop.name || `${t('stop')} ${selectedStop.code}`, url });
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return; // the user closed the share sheet
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      say(t('linkCopied'));
+    } catch {
+      say(url); // no clipboard either: show it, to copy by hand
+    }
+  }, [city, selectedStop, say, t]);
+
   const toggleSettings = () =>
     sheet === 'settings' ? openSheet(selectedStop ? 'stop' : 'home') : openSheet('settings');
 
@@ -269,6 +354,8 @@ export default function App() {
         routePoints={routePoints}
         routeCode={focus?.routeCode}
         routeColor={focus?.color}
+        routeStops={routeStops}
+        passedIndex={progress?.passed}
         userPosition={geo.position}
         panTarget={panTarget}
         getBottomInset={getBottomInset}
@@ -325,6 +412,33 @@ export default function App() {
           {...gripProps}
         />
 
+        {/* An alert set on another stop stays in sight, and a tap returns to it. */}
+        {alert && sheet !== 'settings' && !(sheet === 'stop' && alertOnOpenStop) && (
+          <div className="alert-bar">
+            <button type="button" className="alert-bar-main" onClick={() => selectStop(alert.stop)}>
+              <Icon name="bell" size={15} filled />
+              <span className="alert-bar-text">
+                <strong>{alert.lineCode}</strong> · {alert.stop.name}
+              </span>
+              {arrivalAlert.vehicle && (
+                <span className="alert-bar-eta">
+                  {arrivalAlert.vehicle.departureMins}
+                  {t('minShort')}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setAlert(null)}
+              aria-label={t('alertOff')}
+              title={t('alertOff')}
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        )}
+
         {sheet === 'settings' && (
           <SettingsSheet
             cities={cities}
@@ -335,6 +449,8 @@ export default function App() {
             }}
             lang={lang}
             onLangChange={setSavedLang}
+            alertLead={alertLead}
+            onAlertLeadChange={setAlertLead}
             onClose={() => openSheet(selectedStop ? 'stop' : 'home')}
             collapsed={collapsed}
             gripProps={gripProps}
@@ -357,8 +473,13 @@ export default function App() {
             isFavourite={isFavourite}
             onToggleFavourite={() => favourites.toggle(city, selectedStop)}
             focusedVehicle={focus?.vehicleCode}
+            stopsAway={progress?.stopsAway}
             onFocusVehicle={focusVehicle}
             onUnfocus={unfocusVehicle}
+            alert={alertOnOpenStop ? alert : null}
+            alertLead={alertLead}
+            onToggleAlert={(vehicle) => arrivalAlert.toggle(selectedStop, vehicle, alertLead)}
+            onShare={shareStop}
             collapsed={collapsed}
             gripProps={gripProps}
             t={t}
@@ -392,14 +513,33 @@ export default function App() {
                 onSelectStop={selectStop}
                 geo={geo}
                 onRequestLocation={requestLocation}
+                cities={cities}
+                city={city}
+                onSwitchCity={setSavedCity}
                 collapsed={collapsed}
                 onExpand={() => setCollapsed(false)}
+                lang={lang}
                 t={t}
               />
             )}
           </>
         )}
       </section>
+
+      {/* Always in the page, so screen readers announce what appears in it. */}
+      <div className="toast-region" aria-live="polite">
+        {toast && (
+          <button
+            key={toast.id}
+            type="button"
+            className={`toast ${toast.kind}`}
+            role={toast.kind === 'alert' ? 'alert' : undefined}
+            onClick={() => setToast(null)}
+          >
+            {toast.text}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

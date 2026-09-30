@@ -109,6 +109,15 @@ const OFF_ROUTE_STOP = {
   fillColor: '#2563eb',
   fillOpacity: 0.2,
 };
+// A stop the bus has already left: still part of the route line, but done.
+const PASSED_STOP = (color) => ({
+  radius: 4,
+  color: color || '#1d4ed8',
+  weight: 2,
+  opacity: 0.4,
+  fillColor: '#ffffff',
+  fillOpacity: 0.4,
+});
 
 /** Visible map height below the top bar and above the sheet, and the sheet's height. */
 function visibleBand(map, getBottomInset) {
@@ -288,6 +297,8 @@ export default function StopMap({
   routePoints,
   routeCode,
   routeColor,
+  routeStops,
+  passedIndex,
   userPosition,
   panTarget,
   getBottomInset,
@@ -296,6 +307,17 @@ export default function StopMap({
 }) {
   const positioned = useMemo(() => vehicles.filter((v) => v.hasPosition), [vehicles]);
   const selectedCode = selectedStop?.code;
+
+  // The route's own stop order when it has loaded; until then, or if it fails,
+  // each stop's list of routes. They agreed on every route checked.
+  const onRoute = useMemo(() => (routeStops ? new Set(routeStops) : null), [routeStops]);
+  // Stops the followed bus has left. A circular route lists its terminus first and
+  // last, so it is behind the bus and ahead of it at once: ahead wins.
+  const passed = useMemo(() => {
+    if (!routeStops || passedIndex == null) return null;
+    const ahead = new Set(routeStops.slice(passedIndex + 1));
+    return new Set(routeStops.slice(0, passedIndex + 1).filter((code) => !ahead.has(code)));
+  }, [routeStops, passedIndex]);
 
   // Memoised so a live poll (every 15s) does not restyle all ~500 stop markers:
   // react-leaflet calls setStyle whenever it sees a new pathOptions object, and
@@ -308,9 +330,11 @@ export default function StopMap({
           ? { radius: 9, color: '#ffffff', weight: 3, opacity: 1, fillColor: '#f59e0b', fillOpacity: 1 }
           : !routeCode
             ? { radius: 5, color: '#0b3b8c', weight: 1.5, opacity: 1, fillColor: '#2563eb', fillOpacity: 1 }
-            : stop.routeCodes?.includes(routeCode)
-              ? ROUTE_STOP(routeColor)
-              : OFF_ROUTE_STOP;
+            : !(onRoute ? onRoute.has(stop.code) : stop.routeCodes?.includes(routeCode))
+              ? OFF_ROUTE_STOP
+              : passed?.has(stop.code)
+                ? PASSED_STOP(routeColor)
+                : ROUTE_STOP(routeColor);
         const { radius, ...pathOptions } = style;
         return (
           <CircleMarker
@@ -326,7 +350,7 @@ export default function StopMap({
           </CircleMarker>
         );
       }),
-    [stops, selectedCode, onSelectStop, routeCode, routeColor],
+    [stops, selectedCode, onSelectStop, routeCode, routeColor, onRoute, passed],
   );
 
   return (

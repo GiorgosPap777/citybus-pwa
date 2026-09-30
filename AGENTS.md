@@ -79,7 +79,9 @@ Counts drift as operators add stops — between the 2026-09-01 and 2026-09-29 su
 **`trikala` (119) and `yper-xanthi` (111) do not work.** Their sites exist and serve a valid token
 and agency code, but the API has no data for those agencies — `/stops` *and* `/lines` both return
 404. This is an upstream gap; there is nothing to fix here. They still appear in the city picker
-because that list is scraped from citybus.gr, and the UI shows the `cityUnavailable` string.
+because that list is scraped from citybus.gr. Once the server has asked for one's stops, it remembers
+the city for a week, `/api/cities` marks it `noData`, and the picker greys it out (decision 20).
+Until then, picking it shows the `cityUnavailable` string.
 
 Re-run the survey with:
 
@@ -105,7 +107,7 @@ the gap noted under *Data quirks*.
 | `/api/v1/{lang}/{agency}/stops/live/{code}` | `vehicles[]`: `lineCode`, `lineName`, `routeCode`, `routeName`, `latitude`, `longitude`, `departureMins`, `departureSeconds`, `vehicleCode`, `lineColor`, `lineTextColor`, `borderColor` | yes |
 | `/api/v1/{lang}/{agency}/lines` | lines with nested `routes[]` and colours | proxied, unused by UI |
 | `/api/v1/{agency}/lines/{line}/points` | `[{routeCode, routePoints[]}]`, every route of the line; each point has `sequence` and string `latitude`/`longitude`. **No `{lang}` segment** — easy to get wrong | yes, via `/shape` |
-| `/api/v1/{lang}/{agency}/routes/{route}/sequence` | ordered stop codes for a route | no |
+| `/api/v1/{lang}/{agency}/routes/{route}/sequence` | `[{sequence, code}]`: the stops a route calls at, in order. **Ask in `el`**: `en` is a 404 in Chania and Volos. A circular route lists its terminus first and last (18 of 30 Chania routes checked) | yes, via `/sequence` |
 | `/api/v1/{lang}/{agency}/trips/stop/{code}/day/{day}` | one weekday's timetable for a stop: `tripTime` (`"HH:MM"`), `tripTimeHour`, `tripTimeMinute`, `lineCode`, `lineName`, `routeName`, `lineColor`, `lineTextColor`, sorted by time | yes |
 
 Sizes for Heraklion: stops 118 KB / 547 entries, lines 12 KB / 26 entries, **line points 86 KB for a
@@ -150,13 +152,14 @@ Same-origin with the SPA in production; Vite proxies `/api` to port 3000 in deve
 ```
 GET /api/health                             {ok:true}
 GET /api/config                             {defaultCity, defaultLang}
-GET /api/cities                             [{slug, name, agencyCode|null}]
+GET /api/cities                             [{slug, name, agencyCode|null, noData, bounds|null}]
 GET /api/:city/stops?lang=el                upstream stops, cached 24h
 GET /api/:city/lines?lang=el                upstream lines, cached 24h
 GET /api/:city/stops/:code/live?lang=el     {vehicles[], noService, fetchedAt}, cached 10s
 GET /api/:city/stops/:code/schedule?lang=el {departures[], fetchedAt}, day timetables cached 12h
 GET /api/:city/lines/:line/routes/:route/shape
                                             {lineCode, routeCode, points[[lat,lon]]}, cached 24h
+GET /api/:city/routes/:route/sequence       {routeCode, stops[]}, stop codes in order, cached 24h
 ```
 
 `/shape` is the street path of one route, drawn when the user taps a bus. The upstream serves a whole
@@ -185,7 +188,13 @@ across a deploy asks for its old hashed bundle, and handing it `index.html` fail
 blank screen.
 
 `agencyCode` in `/api/cities` is `null` until that city has actually been used. Resolving all 30
-eagerly would mean 30 extra page fetches for a field the UI does not need.
+eagerly would mean 30 extra page fetches for a field the UI does not need. `noData` is learned the
+same way (decision 20). `bounds` is the area a city's stops cover, `[south, west, north, east]`, from
+`CITY_BOUNDS` in `cities.js` (decision 20).
+
+`/sequence` is one route's stops in order, as codes: ~0.4 KB. It is sent `public, max-age=86400`
+and shares the service worker's `citybus-shapes` cache with `/shape` (160 entries, two per route
+followed). It is always fetched in Greek; the codes are the same in both languages.
 
 ### Input validation is a security control, not politeness
 
@@ -226,6 +235,12 @@ Three things keep it correct, all of which look redundant and are not:
 - `MIN_REFRESH_GAP_MS` (3s) floors the interval between fetches however many resume events arrive.
 
 Verified: pure polling is 2 requests per 33 seconds. Keep it that way.
+
+One exception to stopping while hidden: `whileHidden`, set only while an arrival alert watches that
+stop (decision 18). The user has put the phone away precisely to be told. It ends when the alert
+fires or is dropped, at most the 30 minutes live data reaches ahead. Verified: with the page hidden,
+3 polls in 45 s, then none once the alert was dropped. It is read through a ref at each tick, so
+setting it does not restart the poll.
 
 ### 3. `useStops` and `useLiveArrivals` withhold data from a previous city or stop
 
@@ -303,7 +318,8 @@ a bus, or dragging the map. It expands again on a tap or an upward drag.
   later ones itself over `GLIDE_MS`. react-leaflet calls `setLatLng` whenever `position` changes
   identity, which cuts every glide short. Jumps over `MAX_GLIDE_M` (a new trip or a GPS glitch) and
   `prefers-reduced-motion` skip the animation.
-- Stop markers are memoised on `[stops, selectedCode, onSelectStop, routeCode, routeColor]`. Otherwise
+- Stop markers are memoised on `[stops, selectedCode, onSelectStop, routeCode, routeColor, onRoute,
+  passed]`. Otherwise
   each 15s poll handed all ~550 `CircleMarker`s a new `pathOptions` object, and react-leaflet
   restyled every one — a full canvas redraw per poll. `onSelectStop` must stay a stable callback for this to hold.
 - The route line and the GPS accuracy circle live in a pane at z-index 390, just below the stops
@@ -393,6 +409,12 @@ at a time and leaves the app only from the home panel.
   a dozen presses to get out is worse than losing a stop from five ago. A stop already in the trail
   moves to the top rather than appearing twice. ✕ leaves every stop at once. Opening a stop while
   following a bus replaces the bus layer, so the depth, and the history, stay the same.
+- A stop opened from a shared link (decision 17) is **not a layer**. No tap opened it, so an entry
+  pushed for it would be one Chrome skips. It is marked `fromLink` in the trail, and `linkBase`
+  takes it out of the count. Back from it leaves, as back from any linked page does; stops opened
+  from it stack as usual. Verified: link stop, then a stop from the map, then back: the linked stop
+  returns, with the history back at its base entry. When the trail is cut to 5 and the linked stop
+  drops off, the count rises by one as a new stop is added, so the history still matches.
 
 ### 13. The followed bus's stops (`routeCode` in `StopMap.jsx`)
 
@@ -400,14 +422,23 @@ Asked for: while a bus is followed, show only the stops it will call at. Those s
 rings in the line's colour, and every other stop fades to near-invisible (`OFF_ROUTE_STOP`). They
 fade rather than vanish so a tap, with its slack (decision 11), still reaches them.
 
-- Membership comes from `routeCodes[]`, which `/stops` already carries, so this costs no request.
-  Checked against the drawn paths of five Heraklion routes: every stop listed for a route lay within
-  ~20 m of it (median ~5 m).
+- Membership comes from the route's own stop order (`/sequence`, `useRouteSequence`) once it has
+  loaded, and from `routeCodes[]` on each stop until then or if it fails. The two agreed on all 60
+  Heraklion routes and 60 routes in Chania and Volos checked. `routeCodes[]` was checked against the
+  drawn paths of five Heraklion routes: every stop listed for a route lay within ~20 m of it.
+- Stops the bus has **already left** are drawn smaller and faded in the line colour (`PASSED_STOP`).
+  `routeProgress` in `geo.js` places the bus on the stretch between two consecutive stops it lies
+  closest to, looking only at stretches before the user's stop, since the stop lists the bus because
+  it is coming. That also settles a circular route, whose terminus is behind the bus and ahead of it
+  at once: ahead wins. A bus over 300 m from every stretch (leaving the depot, or a bad fix) gets no
+  progress. The same result gives "N stops away" in the peek chip and the followed row.
+  Only for buses with a GPS fix. Verified against live buses: counts matched the map. One bus reported
+  3 minutes while standing at the airport terminus 24 stops away; the count shows the ETA was wrong.
+- The markers are memoised on the passed index, a number, so they restyle when the bus passes a stop,
+  not on every poll.
 - **Every stop style sets `opacity` explicitly.** Leaflet's `setStyle` merges into the old options, so a
   style without it would inherit the faded one's 0.25. Observed shape of the bug: stops staying faded
   after the bus is let go.
-- Not done: fading the stops the bus has **already passed**. That needs `/routes/{route}/sequence`
-  (see *Open items*).
 
 ### 14. Recovering without a reload (`useStops`, `useLiveArrivals`, `useSchedule`)
 
@@ -470,6 +501,77 @@ using the offset in force then. Verified: Sat 24 Oct 21:00 → Sun 07:00 is `202
 abbreviations before ("Sep" → "Sept"), and a mismatch gave day `-1` and a failing `/schedule`
 everywhere.
 
+### 17. Shared stop links (`link.js`, `App.jsx`)
+
+`/?city=irakleio&stop=0122` opens the app on that stop. The share button in a stop's header uses the
+system share sheet where there is one (phones) and the clipboard otherwise.
+
+- The link is read **once, at module level**, before the first render, so the stop is open from the
+  start. The query is then removed from the address bar. Left there, every reload would reopen the
+  linked stop, and Android reloads an installed app whenever it restores one from the background.
+- Both values pass the server's own patterns (`validate.js`). Anything else is ignored.
+- The link's city is saved as if picked in settings: a stop shared from a city is almost always for
+  someone in it.
+- The linked stop starts with only its code, so live arrivals start at once. The name and position
+  arrive with the stop list, and the map then pans to it. A code the city does not have closes the
+  stop.
+- The city-change effect skips the first render (`shownCity`). Run on mount as well, it would close
+  the linked stop as soon as it opened.
+- Back from a linked stop: see decision 12.
+
+### 18. Arrival alerts (`useArrivalAlert.js`)
+
+Asked for: "tell me when it's close". A bell beside each live bus sets an alert for when that bus is
+the chosen number of minutes away (settings: 2, 5 or 10; default 5). There is no push server, so it
+works only while the app runs.
+
+- One alert at a time. It fires once (vibration, a notification, and a message in the app) and clears
+  itself. A bus already inside the lead time is announced as it arrives (1 minute) instead. The bell
+  is hidden for a bus a minute out, where an alert could only come too late.
+- The alert keeps **its own stop** polled, open or not, so the user can look at other stops while
+  waiting. When that stop is open, its own poll is used rather than a second one. An alert bar at the
+  top of the sheet shows it from anywhere else, and a tap reopens the stop.
+- It polls while the app is hidden (decision 2). A bus missing from 3 answers in a row cancels the
+  alert with a message. One is not enough: the feed drops a bus now and then.
+- Notifications go through the service worker (`registration.showNotification`). Android Chrome
+  throws on `new Notification()`, which is kept for the development server, which has no worker.
+  `public/sw-alerts.js`, pulled in by `workbox.importScripts`, focuses the app when the notification
+  is tapped; without it, tapping did nothing.
+- Permission is asked on the first bell tap, the gesture the prompt needs. Denied, the alert still
+  works in the app, and the confirmation says "while the app is open".
+- The alert stores a plain copy of the stop, without the `fromLink` mark. With the mark, a linked
+  stop reopened from the alert bar would take no history entry, and back would leave the app instead
+  of going home. Found in review before release; verified fixed: reopened from the bar, the stop
+  takes history entry 1.
+
+### 19. Greeklish search (`search.js`)
+
+Many people type Greek on a Latin keyboard, and `panepistimio` found nothing. Each stop name is also
+reduced to how it sounds (`soundOf`): Greek letters to Latin as Greeklish spells them, then spellings
+of the same sound collapsed to one letter (ξ and χ to x, β and μπ to v, ι η υ ει οι to i, doubled
+letters to one). Both sides are reduced the same way, so conflating two sounds loosens the search a
+little and never breaks a match.
+
+- Latin **h** is ambiguous: χ in phonetic Greeklish (`hania`), η in the kind that copies the letters'
+  look (`panepisthmio`). A query therefore has two readings (`soundsOfQuery`) and matches if either
+  does. The visual one also takes u for υ; both take 8 for θ.
+- Matches as typed come first; sound matches only fill the 25 results after them.
+- Digits are never collapsed: `1866` stays `1866`.
+- No lookbehind in the patterns: Safari before 16.4 fails to parse the whole bundle on one.
+
+### 20. Cities the user is not in, and cities without data
+
+- Reported: Chania chosen, the user in Athens, and "Near me" listed stops 272 km away. When the
+  nearest stop is over 20 km away (`FAR_FROM_CITY_M`), "Near me" says how far instead, and offers the
+  city whose stop area is within 10 km of the user, if any (`nearestCity`).
+- The areas are `CITY_BOUNDS` in `server/src/cities.js`, measured from the stop lists of 2026-09-30.
+  Fetching 28 stop lists to find the nearest city was not an option on a home uplink. A city missing
+  from the table is never suggested; add it when you notice one.
+- A city whose site answers but whose stops are a 404 is remembered for a week (`noDataCache`,
+  persisted), and `/api/cities` marks it `noData`. The picker greys it out, unless it is the current
+  city. An unknown city 404s at its site, before it has an agency code, so it is never marked. A week,
+  so a city the operator fills in is tried again.
+
 ---
 
 ## Conventions
@@ -499,15 +601,21 @@ server/src/
   cities.js    scrapes the citybus.gr landing page for the city list (seed list as fallback)
   cache.js     TTL cache: single-flight, failure caching, size caps, optional disk persistence
 web/src/
-  App.jsx      state orchestration; owns city/lang/stopTrail/focus/panTarget/sheet mode
+  App.jsx      state orchestration; owns city/lang/stopTrail/focus/alert/panTarget/sheet mode
   api.js       thin fetch wrappers over /api
-  geo.js       haversine distance, nearest-stops sort, distance formatting
+  geo.js       distances, nearest stops and city, where a bus is along its route
+  search.js    folding for search, and how a name sounds (Greeklish)
+  link.js      shared stop links: reading one, making one
+  validate.js  the server's patterns, for anything from storage or a link
   i18n.js      el/en strings, English city names, errorMessage
   storage.js   localStorage guarded against private-mode throws
   main.jsx     mounts App inside ErrorBoundary
   components/  StopMap · StopSheet · HomePanel · SettingsSheet · ErrorBoundary · Icon (inline SVGs)
-  hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useGeolocation
-               useSheetDrag · useFavourites · usePersistentState · useBackButton
+  hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useRouteSequence
+               useArrivalAlert · useGeolocation · useSheetDrag · useFavourites
+               usePersistentState · useBackButton
+web/public/sw-alerts.js focuses the app when an alert's notification is tapped; loaded into the
+                        generated service worker by workbox.importScripts
 web/icon-maskable.svg   source of public/icon-maskable-512.png: full-bleed, bus inside the central
                         80% safe zone. Kept out of public/ so it is not precached. Re-render with
                         rsvg-convert -w 512 -h 512 icon-maskable.svg -o public/icon-maskable-512.png
@@ -529,6 +637,11 @@ Expected results:
 - `/api/irakleio/stops/9999/live` → `{"vehicles":[],"noService":true}`
 - `/api/irakleio/stops/0122/schedule` → 8 departures with `time` ≥ the current Athens time
 - `/api/irakleio/lines/06/routes/21009/shape` → 200, ~2.4 KB · an unknown route → 404
+- `/api/irakleio/routes/21009/sequence` → 45 codes, `9911` first · `/api/chania/routes/067/sequence` →
+  starts and ends with `74005` · `/api/irakleio/routes/99999/sequence` → 404 ·
+  `/api/irakleio/routes/..%2f1/sequence` → 400
+- after `/api/trikala/stops` (404), `/api/cities` marks `trikala` `noData: true`, and
+  `/api/nosuchcity/stops` marks nothing
 - `/api/nosuchcity/stops` → 404, not 502; a second request is answered from cache in ~1 ms
 - `/api/evil.com/stops` → 400, `/api/irakleio/stops/..%2f..%2fetc/live` → 400 (same for `/schedule`),
   `/api/irakleio/lines/..%2f06/routes/1/shape` → 400
@@ -570,6 +683,18 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
   retry button and the favourites, retries after 5 s then 10 s, and recovers
 - with `/live` failing, a stop shows the translated error and the timetable below it
 - at 1280 px wide the sheet is 480 px and centred
+- `/?city=irakleio&stop=0122` with another city saved: the stop opens in Heraklion, the address bar
+  shows `/`, and `history.state` is null. Open a stop from the map, then back: the linked stop returns.
+  `stop=ZZZZ` closes to home once the stops load; `city=evil.com` is ignored
+- following a bus shows "N stops away" in its chip and fades the stops behind it; the counts add up
+  (passed + ahead + the selected stop = the route's length)
+- a bell sets an alert (a message confirms, the bell shows the minutes); with `/live` faked to bring
+  that bus inside the lead, the next poll vibrates, notifies (through the service worker) and says
+  so. Closed stop: an alert bar shows the minutes and reopens the stop. With `document.hidden` faked,
+  polling continues; faked missing for 3 polls, the alert cancels with a message and polling stops
+- `panepistimio` and `panepisthmio` find ΠΑΝΕΠΙΣΤΗΜΙΟ
+- a fake fix in Chania with Heraklion chosen: "Near me" gives the distance and offers Chania
+- settings greys out a city the server has found without data
 
 Traps for automated browsers:
 - A page that is **not visible** gets no `requestAnimationFrame`, so `flyTo` stalls on its first
@@ -627,9 +752,13 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
   Forward, on desktop, reopens nothing.
 - **Route lines are built for the tapped bus only.** Showing every route through a stop, or a line
   browser, is additive — `/shape` and `/lines` already exist.
-- **Not built, endpoint confirmed working:** `/routes/{route}/sequence` (a route's ordered stops),
-  which would let a tapped bus fade the stops it has already passed (decision 13) or show "3 stops
-  away".
+- **Arrival alerts need the app running** (decision 18): there is no push server. In the background
+  the browser may slow the poll to once a minute, or stop the page altogether, and an alert then
+  comes late or not at all. Real push would need a server-side watcher and Web Push keys. Not tested
+  on a phone yet, nor on iOS, where notifications need the app installed (16.4+).
+- **"N stops away" needs a GPS fix**, so about half of live buses get none.
+- **Share and links not tested on a phone.** Whether an installed app captures a shared link or it
+  opens in the browser is up to the phone.
 - **Unchecked: trips just after midnight.** Day timetables list trips at 00:00–01:02, which the
   server treats as the early morning of that calendar day. If the operator means the end of the
   previous service day, `/schedule` shows the wrong set around midnight. Compare `/schedule` with live

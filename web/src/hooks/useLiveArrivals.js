@@ -12,12 +12,23 @@ const MIN_REFRESH_GAP_MS = 3000;
  * fetch — a backgrounded phone should not be firing requests every 15s, and the
  * data on return is stale enough that waiting for the next tick would show wrong
  * minute counts.
+ *
+ * `whileHidden` is the one exception: an arrival alert is set on this stop, and
+ * the user has put the phone away precisely to be told. It lasts until the alert
+ * goes off or is dropped, which is at most the 30 minutes live data reaches ahead.
+ * The browser may still slow the timer down in the background.
  */
-export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
+export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = {}) {
   const [state, setState] = useState({ key: null, data: null, error: null, loading: false, refreshing: false });
   const key = stopCode ? `${city}:${lang}:${stopCode}` : null;
   const hasData = useRef(false);
   const refreshNow = useRef(() => {});
+  // Read at each tick rather than restarting the poll when it changes.
+  const pollHidden = useRef(whileHidden);
+
+  useEffect(() => {
+    pollHidden.current = whileHidden;
+  }, [whileHidden]);
 
   useEffect(() => {
     hasData.current = false;
@@ -55,7 +66,7 @@ export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
 
     const scheduleNext = () => {
       clearTimeout(timer);
-      if (!document.hidden) timer = setTimeout(cycle, intervalMs);
+      if (!document.hidden || pollHidden.current) timer = setTimeout(cycle, POLL_MS);
     };
 
     // Every entry point funnels through here, and each one cancels the pending
@@ -83,7 +94,7 @@ export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
       wasHidden = isHidden;
 
       if (isHidden) {
-        clearTimeout(timer);
+        if (!pollHidden.current) clearTimeout(timer);
       } else if (Date.now() - lastFetchAt < MIN_REFRESH_GAP_MS) {
         scheduleNext(); // fetched a moment ago; just restart the timer
       } else {
@@ -116,7 +127,7 @@ export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
       refreshNow.current = () => {};
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [city, lang, stopCode, intervalMs, key]);
+  }, [city, lang, stopCode, key]);
 
   const refresh = useCallback(() => refreshNow.current(), []);
 

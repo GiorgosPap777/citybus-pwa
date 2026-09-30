@@ -36,6 +36,8 @@ function LineBadge({ line }) {
   );
 }
 
+const stopsAwayLabel = (n, t) => (n === 1 ? t('nextStopAway') : t('stopsAway', { n }));
+
 function Eta({ minutes, t }) {
   if (minutes <= 0) return <span className="eta now">{t('arriving')}</span>;
   return (
@@ -55,7 +57,7 @@ function Eta({ minutes, t }) {
  * the sheet, and the only way back to the full list was to know the header
  * expands it — users did not, and closed the stop instead.
  */
-function Peek({ vehicles, loading, focusedVehicle, onFocusVehicle, onUnfocus, t }) {
+function Peek({ vehicles, loading, focusedVehicle, stopsAway, onFocusVehicle, onUnfocus, t }) {
   if (loading) return null;
   const back = focusedVehicle && (
     <button
@@ -95,10 +97,42 @@ function Peek({ vehicles, loading, focusedVehicle, onFocusVehicle, onUnfocus, t 
           >
             <LineBadge line={vehicle} />
             <Eta minutes={vehicle.departureMins} t={t} />
+            {focused && stopsAway != null && (
+              <small className="chip-note">{stopsAwayLabel(stopsAway, t)}</small>
+            )}
           </button>
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Sets or clears an arrival alert for one bus. Hidden once a bus is a minute out,
+ * where an alert could only come too late, but kept while set so it can be cleared.
+ */
+function AlertBell({ vehicle, alert, lead, onToggle, t }) {
+  const on = alert?.vehicleCode === vehicle.vehicleCode;
+  if (!on && vehicle.departureMins <= 1) return <span className="bell-btn" aria-hidden="true" />;
+  // What a tap would set; see useArrivalAlert.
+  const minutes = vehicle.departureMins > lead ? lead : 1;
+  return (
+    <button
+      type="button"
+      className={`bell-btn ${on ? 'on' : ''}`}
+      onClick={() => onToggle(vehicle)}
+      aria-pressed={on}
+      aria-label={on ? t('alertOff') : t('alertOn', { n: minutes })}
+      title={on ? t('alertOff') : t('alertOn', { n: minutes })}
+    >
+      <Icon name="bell" size={17} filled={on} />
+      {on && (
+        <small>
+          {alert.minutes}
+          {t('minShort')}
+        </small>
+      )}
+    </button>
   );
 }
 
@@ -213,8 +247,13 @@ export default function StopSheet({
   isFavourite,
   onToggleFavourite,
   focusedVehicle,
+  stopsAway,
   onFocusVehicle,
   onUnfocus,
+  alert,
+  alertLead,
+  onToggleAlert,
+  onShare,
   collapsed,
   gripProps,
   t,
@@ -225,13 +264,23 @@ export default function StopSheet({
     <>
       <header className="sheet-head grip" {...gripProps}>
         <div className="sheet-title">
-          <h2>{stop.name}</h2>
+          {/* A stop opened from a link has only its code until the stop list arrives. */}
+          <h2>{stop.name || t('loading')}</h2>
           <p className="muted">
             {t('stop')} {stop.code}
             {refreshing && <span className="dot-pulse" aria-hidden="true" />}
           </p>
         </div>
         <div className="sheet-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onShare}
+            aria-label={t('share')}
+            title={t('share')}
+          >
+            <Icon name="share" />
+          </button>
           <button
             type="button"
             className={`icon-btn star ${isFavourite ? 'on' : ''}`}
@@ -253,6 +302,7 @@ export default function StopSheet({
           vehicles={vehicles}
           loading={loading}
           focusedVehicle={focusedVehicle}
+          stopsAway={stopsAway}
           onFocusVehicle={onFocusVehicle}
           onUnfocus={onUnfocus}
           t={t}
@@ -283,11 +333,11 @@ export default function StopSheet({
               {vehicles.map((vehicle) => {
                 const focused = vehicle.vehicleCode === focusedVehicle;
                 return (
-                  <li key={vehicle.vehicleCode}>
+                  <li key={vehicle.vehicleCode} className={`live ${focused ? 'focused' : ''}`}>
                     {/* The whole row is the target: a small icon button alone went unnoticed. */}
                     <button
                       type="button"
-                      className={`row ${focused ? 'focused' : ''}`}
+                      className="row"
                       onClick={() => onFocusVehicle(vehicle)}
                       aria-pressed={focused}
                       title={t('showRoute')}
@@ -296,12 +346,22 @@ export default function StopSheet({
                       <span className="line-text">
                         <strong>{vehicle.lineName}</strong>
                         <small>{vehicle.routeName}</small>
+                        {focused && stopsAway != null && (
+                          <small className="stops-away">{stopsAwayLabel(stopsAway, t)}</small>
+                        )}
                       </span>
                       <span className="row-hint" aria-hidden="true">
                         <Icon name={vehicle.hasPosition ? 'locate' : 'route'} size={16} />
                       </span>
                       <Eta minutes={vehicle.departureMins} t={t} />
                     </button>
+                    <AlertBell
+                      vehicle={vehicle}
+                      alert={alert}
+                      lead={alertLead}
+                      onToggle={onToggleAlert}
+                      t={t}
+                    />
                   </li>
                 );
               })}

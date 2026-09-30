@@ -1,20 +1,9 @@
 import { useMemo, useState } from 'react';
-import { formatDistance, nearestStops } from '../geo.js';
+import { FAR_FROM_CITY_M, formatDistance, nearestCity, nearestStops } from '../geo.js';
+import { cityName } from '../i18n.js';
+import { fold, soundOf, soundsOfQuery } from '../search.js';
 
-/**
- * Greek stop names are mostly capitals without accents ("ΠΑΝΕΠΙΣΤΗΜΙΟ"), but
- * people type lowercase with them ("πανεπιστήμιο"), which lowercasing alone never
- * matches. Strip diacritics and fold final sigma so both sides compare equal.
- * Tolerates a missing name: an installed app can still hold an older cached stop
- * list in which a few English names were null.
- */
-const fold = (text) =>
-  String(text ?? '')
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .toLocaleLowerCase()
-    .replace(/ς/g, 'σ')
-    .replace(/\s+/g, ' ');
+const MAX_RESULTS = 25;
 
 function StopRow({ stop, onSelect, trailing }) {
   return (
@@ -35,25 +24,47 @@ export default function HomePanel({
   onSelectStop,
   geo,
   onRequestLocation,
+  cities,
+  city,
+  onSwitchCity,
   collapsed,
   onExpand,
+  lang,
   t,
 }) {
   const [query, setQuery] = useState('');
 
   // Folded once per stop list, not once per keystroke.
   const searchIndex = useMemo(
-    () => stops.map((stop) => ({ stop, code: fold(stop.code), name: fold(stop.name) })),
+    () =>
+      stops.map((stop) => ({
+        stop,
+        code: fold(stop.code),
+        name: fold(stop.name),
+        sound: soundOf(stop.name),
+      })),
     [stops],
   );
 
+  // Matches as typed come first. Matches by sound (Greeklish, a misplaced η or ω)
+  // only fill the list after them, so they never push an exact match out.
   const results = useMemo(() => {
     const needle = fold(query).trim();
     if (!needle) return null;
-    return searchIndex
-      .filter((entry) => entry.code.includes(needle) || entry.name.includes(needle))
-      .slice(0, 25)
-      .map((entry) => entry.stop);
+    const matches = searchIndex.filter(
+      (entry) => entry.code.includes(needle) || entry.name.includes(needle),
+    );
+    if (matches.length < MAX_RESULTS) {
+      const sounds = soundsOfQuery(query);
+      const exact = new Set(matches);
+      for (const entry of searchIndex) {
+        if (matches.length >= MAX_RESULTS) break;
+        if (!exact.has(entry) && sounds.some((sound) => entry.sound.includes(sound))) {
+          matches.push(entry);
+        }
+      }
+    }
+    return matches.slice(0, MAX_RESULTS).map((entry) => entry.stop);
   }, [query, searchIndex]);
 
   const favouriteStops = useMemo(() => {
@@ -66,6 +77,14 @@ export default function HomePanel({
   const nearby = useMemo(
     () => (geo.position && stops.length ? nearestStops(stops, geo.position, 6) : []),
     [geo.position, stops],
+  );
+
+  // Stops tens of kilometres away are no use as "near me": the user is in another
+  // city, or none. Offer the city they are in, when it is on the platform.
+  const far = nearby.length > 0 && nearby[0].distance > FAR_FROM_CITY_M;
+  const suggestion = useMemo(
+    () => (far ? nearestCity(cities, geo.position, city) : null),
+    [far, cities, geo.position, city],
   );
 
   const locationMessage = {
@@ -144,7 +163,18 @@ export default function HomePanel({
                 </button>
               )}
             </h3>
-            {nearby.length ? (
+            {far ? (
+              <>
+                <p className="hint">
+                  {t('farFromCity', { distance: formatDistance(nearby[0].distance, t) })}
+                </p>
+                {suggestion && (
+                  <button type="button" className="btn wide" onClick={() => onSwitchCity(suggestion.slug)}>
+                    {t('switchCity', { city: cityName(suggestion, lang) })}
+                  </button>
+                )}
+              </>
+            ) : nearby.length ? (
               <ul className="stop-list">
                 {nearby.map((stop) => (
                   <StopRow

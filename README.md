@@ -20,14 +20,21 @@ configuration — the app discovers each one by itself.
   Shown on its own when no bus is due in the next 30 minutes, opened by itself at a quiet stop, and
   one tap away at a busy one.
 - **Buses on the map**, coloured by line, gliding smoothly between updates.
-- **Tap a bus to follow it** — draws its route on the map, picks out the stops it calls at, and frames
-  the bus together with your stop; **Back** returns to every bus due there.
+- **Tap a bus to follow it** — draws its route on the map, picks out the stops it still has to call
+  at (the ones it has passed fade), counts how many stops away it is, and frames the bus together
+  with your stop; **Back** returns to every bus due there.
+- **Tell me when it's close** — tap the bell beside a bus and the phone notifies you and vibrates when
+  it is 2, 5 or 10 minutes away (your choice, in settings). Works while the app is open or in the
+  background; no account, no push server.
 - **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
   of the next buses, and see the whole map.
 - **Back works like an app** — the phone's back gesture closes settings, stops following a bus, then
   steps back through the stops you opened, and only then leaves the app.
-- **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk.
-- **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ`.
+- **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk. In
+  another city it offers to switch to it.
+- **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ` — and reads
+  Greeklish: `panepistimio` and `panepisthmio` find it too.
+- **Share a stop** — a link like `/?city=irakleio&stop=0122` opens the app on that stop.
 - **Favourites** — save your home and work stops; they open first, no map needed.
 - **Greek and English**, including translated stop, line and city names.
 - **Installable** — add to your home screen and it runs like a native app.
@@ -115,8 +122,9 @@ Valid slugs are the citybus.gr subdomains — `irakleio`, `chania`, `patra`, `vo
 
 Two of the 30, **`trikala` and `yper-xanthi`**, have a citybus.gr site but no data in the API —
 `/stops` and `/lines` both return 404 for their agency codes. They still appear in the city picker
-(the list is scraped from citybus.gr) and show a "this city does not publish stop data" message if
-selected. It is an upstream gap, not something this app can fix.
+(the list is scraped from citybus.gr). Once the server has tried one and found it empty, the picker
+greys it out as "no data"; until then, picking it shows a "this city does not publish stop data"
+message. It is an upstream gap, not something this app can fix.
 
 ## Deploying
 
@@ -152,6 +160,7 @@ server/          Express proxy + token manager + cache; serves web/dist in produ
 web/             React 19 + Vite + Leaflet PWA
   src/components/  StopMap · StopSheet · HomePanel · SettingsSheet
   src/hooks/       useStops · useLiveArrivals · useSchedule · useGeolocation · useFavourites
+                   useArrivalAlert · useRouteSequence · …
 AGENTS.md        architecture notes, API reference, and why the tricky code is shaped as it is
 DEPLOY.md        putting it on a server behind Nginx Proxy Manager
 ```
@@ -168,6 +177,7 @@ GET /api/:city/lines?lang=el                lines with colours and routes
 GET /api/:city/stops/:code/live?lang=el     arrivals plus live vehicle positions
 GET /api/:city/stops/:code/schedule?lang=el next timetabled departures from now
 GET /api/:city/lines/:line/routes/:route/shape  one route's street path, simplified
+GET /api/:city/routes/:route/sequence       the stops one route calls at, in order
 ```
 
 City slugs are validated against `[a-z0-9-]` before being interpolated into a hostname, so the proxy

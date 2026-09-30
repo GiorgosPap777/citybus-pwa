@@ -31,6 +31,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
+        // Handles taps on arrival alert notifications (public/sw-alerts.js).
+        importScripts: ['sw-alerts.js'],
         runtimeCaching: [
           {
             // Live arrivals must never come from a cache — a stale bus time is
@@ -42,13 +44,16 @@ export default defineConfig({
             handler: 'NetworkOnly',
           },
           {
-            // A route's street path changes only when the operator redraws it. Its
-            // own cache, so viewing many routes cannot evict the stop lists below.
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname.endsWith('/shape'),
+            // A route's street path and its stop order change only when the operator
+            // redraws the route. Their own cache, so viewing many routes cannot
+            // evict the stop lists below. Two entries per route followed.
+            urlPattern: ({ url }) =>
+              url.pathname.startsWith('/api/') &&
+              (url.pathname.endsWith('/shape') || url.pathname.endsWith('/sequence')),
             handler: 'CacheFirst',
             options: {
               cacheName: 'citybus-shapes',
-              expiration: { maxEntries: 80, maxAgeSeconds: 7 * 24 * 60 * 60 },
+              expiration: { maxEntries: 160, maxAgeSeconds: 7 * 24 * 60 * 60 },
             },
           },
           {

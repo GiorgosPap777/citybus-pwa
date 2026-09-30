@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import Icon from './Icon.jsx';
 import { cityName } from '../i18n.js';
+import { ALERT_LEADS } from '../hooks/useArrivalAlert.js';
 
 export default function SettingsSheet({
   cities,
@@ -8,6 +9,8 @@ export default function SettingsSheet({
   onCityChange,
   lang,
   onLangChange,
+  alertLead,
+  onAlertLeadChange,
   onClose,
   collapsed,
   gripProps,
@@ -18,12 +21,18 @@ export default function SettingsSheet({
   // The current city is listed even when the scraped list lacks it (a city dropped
   // upstream, or the list not loaded yet). A <select> whose value matches no option
   // shows the first one as chosen, and choosing that then fires no change at all.
+  // A city found to have no data (the server learns it on first use) cannot be
+  // picked, instead of being picked and then answering with an error.
   const options = useMemo(() => {
     const list = cities.some((c) => c.slug === city) ? cities : [...cities, { slug: city }];
     return list
-      .map((c) => ({ slug: c.slug, label: cityName(c, lang) }))
+      .map((c) => ({
+        slug: c.slug,
+        label: c.noData ? `${cityName(c, lang)} — ${t('noData')}` : cityName(c, lang),
+        disabled: !!c.noData && c.slug !== city,
+      }))
       .sort((a, b) => a.label.localeCompare(b.label, lang));
-  }, [cities, city, lang]);
+  }, [cities, city, lang, t]);
 
   return (
     <>
@@ -44,7 +53,7 @@ export default function SettingsSheet({
             <label htmlFor="city-select">{t('city')}</label>
             <select id="city-select" value={city} onChange={(e) => onCityChange(e.target.value)}>
               {options.map((c) => (
-                <option key={c.slug} value={c.slug}>
+                <option key={c.slug} value={c.slug} disabled={c.disabled}>
                   {c.label}
                 </option>
               ))}
@@ -68,6 +77,23 @@ export default function SettingsSheet({
               >
                 English
               </button>
+            </div>
+          </div>
+
+          <div className="field">
+            <span className="label">{t('alertLead')}</span>
+            <div className="segmented">
+              {ALERT_LEADS.map((minutes) => (
+                <button
+                  key={minutes}
+                  type="button"
+                  className={alertLead === minutes ? 'on' : ''}
+                  onClick={() => onAlertLeadChange(minutes)}
+                >
+                  {minutes}
+                  {t('minShort')}
+                </button>
+              ))}
             </div>
           </div>
         </>

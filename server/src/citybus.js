@@ -37,6 +37,13 @@ const liveCache = new TtlCache({ name: 'live', maxEntries: 2000, failureTtl });
 const scheduleCache = new TtlCache({ name: 'schedule', maxEntries: 500, failureTtl });
 // Memory only: shapes are cheap to rebuild and would bloat the static cache file.
 const shapeCache = new TtlCache({ name: 'shapes', maxEntries: 300, failureTtl });
+// Memory only, like shapes: a route's stop order is small and cheap to fetch again.
+const sequenceCache = new TtlCache({ name: 'sequences', maxEntries: 500, failureTtl });
+// Cities whose site works but whose agency has no data in the API (trikala and
+// yper-xanthi, 2026-09). Remembered so the city picker can say so before anyone
+// picks one. Kept a week, so a city the operator fills in is tried again.
+const noDataCache = new TtlCache({ name: 'nodata', dir: CACHE_DIR, maxEntries: 100 });
+const NO_DATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // A ceiling on requests to citybus.gr from this server, shared by all users. The
 // caches keep normal use far below it; it exists so that nobody can use the proxy
@@ -218,9 +225,21 @@ async function apiGet(slug, buildPath) {
 export async function getStops(slug, lang) {
   assertSlug(slug);
   assertLang(lang);
-  const stops = await staticCache.wrap(`stops:${slug}:${lang}`, STATIC_TTL_MS, () =>
-    apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/stops`),
-  );
+  let stops;
+  try {
+    stops = await staticCache.wrap(`stops:${slug}:${lang}`, STATIC_TTL_MS, () =>
+      apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/stops`),
+    );
+  } catch (err) {
+    // A 404 once the site has answered (it has, if its agency code is known) is
+    // the API holding nothing for that agency. An unknown city 404s earlier, at
+    // its site, and has no agency code.
+    if (err.status === 404 && peekAgencyCode(slug) && !noDataCache.get(slug)) {
+      noDataCache.set(slug, true, NO_DATA_TTL_MS);
+    }
+    throw err;
+  }
+  if (noDataCache.get(slug)) noDataCache.delete(slug);
   // Applied after the cache rather than inside it so entries cached before this
   // existed are repaired too, not served nameless until they expire.
   return fillMissingNames(slug, lang, stops);
@@ -466,7 +485,33 @@ export async function getRouteShape(slug, lineCode, routeCode) {
   return { lineCode, routeCode, points };
 }
 
+/**
+ * The stops one route calls at, in order, as stop codes. Lets the client count the
+ * stops a bus has left before the user's, and fade the ones it has passed.
+ * Always asked for in Greek: the codes do not depend on the language, and the
+ * English variant is a 404 in some cities (Chania and Volos, 2026-09) where the
+ * Greek one works. A circular route lists its terminus first and last.
+ */
+export async function getRouteSequence(slug, routeCode) {
+  assertSlug(slug);
+  assertCode(routeCode, 'route');
+
+  const stops = await sequenceCache.wrap(`${slug}:${routeCode}`, STATIC_TTL_MS, async () => {
+    const data = await apiGet(
+      slug,
+      (agency) => `/api/v1/el/${agency}/routes/${encodeURIComponent(routeCode)}/sequence`,
+    );
+    return [...data].sort((a, b) => a.sequence - b.sequence).map((entry) => String(entry.code));
+  });
+  return { routeCode, stops };
+}
+
 /** Agency code for a city, if we happen to have it cached already. Never fetches. */
 export function peekAgencyCode(slug) {
   return siteCache.get(slug)?.agencyCode ?? null;
+}
+
+/** Whether a city is known to have no data upstream. Never fetches. */
+export function peekNoData(slug) {
+  return noDataCache.get(slug) === true;
 }
