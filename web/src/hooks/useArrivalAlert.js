@@ -56,13 +56,28 @@ export function useArrivalAlert({ alert, setAlert, city, lang, openStopCode, ope
     missing.current = 0;
   }, [alert]);
 
+  // Either outcome is told three ways: vibration (ignored by Chrome while the page
+  // is hidden), a notification when allowed, and a message in the app, which waits
+  // for the app to be in view (App.jsx). A message that waited says when it
+  // happened: "3 minutes away" read ten minutes later is wrong without it.
+  const tell = (title, body, inApp = `${title}: ${body}`) => {
+    navigator.vibrate?.(VIBRATION);
+    showNotification(title, body);
+    const at = document.hidden
+      ? `${new Date().toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })} · `
+      : '';
+    say(`${at}${inApp}`, 'alert');
+  };
+
   useEffect(() => {
     if (!alert || !data) return;
+    const title = t('alertTitle', { line: alert.lineCode });
     if (!vehicle) {
       missing.current += 1;
       if (missing.current >= LOST_AFTER_POLLS) {
         setAlert(null);
-        say(t('alertLost', { line: alert.lineCode }));
+        const lost = t('alertLost', { line: alert.lineCode });
+        tell(title, lost, lost);
       }
       return;
     }
@@ -70,14 +85,12 @@ export function useArrivalAlert({ alert, setAlert, city, lang, openStopCode, ope
     if (vehicle.departureMins > alert.minutes) return;
 
     setAlert(null);
-    const title = t('alertTitle', { line: alert.lineCode });
-    const body =
+    tell(
+      title,
       vehicle.departureMins <= 0
         ? t('alertBodyNow', { stop: alert.stop.name })
-        : t('alertBody', { stop: alert.stop.name, n: vehicle.departureMins });
-    navigator.vibrate?.(VIBRATION);
-    showNotification(title, body);
-    say(`${title}: ${body}`, 'alert');
+        : t('alertBody', { stop: alert.stop.name, n: vehicle.departureMins }),
+    );
     // Deliberately keyed on the data alone: each answer is looked at once.
   }, [data]);
 

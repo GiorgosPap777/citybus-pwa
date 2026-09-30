@@ -54,17 +54,36 @@ const NO_DATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UPSTREAM_PER_SECOND = 10;
 const UPSTREAM_BURST = 50;
 let upstreamBudget = UPSTREAM_BURST;
-let upstreamBudgetAt = Date.now();
+// A monotonic clock: with Date.now, a wall clock stepped back (an NTP correction)
+// drove the budget negative, refusing everything for as long as the step.
+let upstreamBudgetAt = performance.now();
+// Refusals are counted and logged at most once a minute. A line per refusal let
+// anyone who could exhaust the budget flood the log as well (measured: ~105 lines
+// in 30 seconds), the same vector the %FF fix closed in index.js.
+const BUDGET_LOG_MS = 60_000;
+let refusedSinceLog = 0;
+let budgetLoggedAt = -Infinity;
 
 function spendUpstreamBudget() {
-  const now = Date.now();
+  const now = performance.now();
   upstreamBudget = Math.min(
     UPSTREAM_BURST,
     upstreamBudget + ((now - upstreamBudgetAt) / 1000) * UPSTREAM_PER_SECOND,
   );
   upstreamBudgetAt = now;
-  if (upstreamBudget < 1) throw new HttpError(503, 'Too many upstream requests; try again shortly');
-  upstreamBudget -= 1;
+  if (upstreamBudget >= 1) {
+    upstreamBudget -= 1;
+    return;
+  }
+  refusedSinceLog += 1;
+  if (now - budgetLoggedAt >= BUDGET_LOG_MS) {
+    console.warn(`[citybus] upstream budget spent: ${refusedSinceLog} request(s) refused since the last report`);
+    refusedSinceLog = 0;
+    budgetLoggedAt = now;
+  }
+  const err = new HttpError(503, 'Too many upstream requests; try again shortly');
+  err.logged = true; // index.js skips its own line for it
+  throw err;
 }
 // Route polylines are simplified to this tolerance before they leave the server.
 // It cuts a typical route from ~900 points to ~120 (86 KB upstream to ~2 KB sent)
@@ -212,7 +231,15 @@ async function apiGet(slug, buildPath) {
     }
   }
 
-  if (res.status === 404) throw new HttpError(404, 'Not found upstream');
+  if (res.status === 404) {
+    // Marked, because callers read the API's own 404 as "nothing there": no bus
+    // due, no trips that day, no data for the agency. A 404 from the city's site
+    // (getSite) is a city that does not exist and must stay an error. Read as "no
+    // service", a link with a misspelt city answered "no buses due".
+    const err = new HttpError(404, 'Not found upstream');
+    err.fromApi = true;
+    throw err;
+  }
   if (!res.ok) throw new HttpError(502, `Upstream returned ${res.status}`);
 
   try {
@@ -222,48 +249,105 @@ async function apiGet(slug, buildPath) {
   }
 }
 
+/**
+ * A 200 whose body is not the expected shape must fail inside the producer, before
+ * it can be cached. Measured with an upstream answering {"message":"maintenance"}:
+ * that object was cached as Heraklion's stop list for 24 hours, on disk, so a
+ * restart did not clear it, and every request crashed on it with a stack trace.
+ * Failures are cached for seconds and never persisted.
+ */
+function expectArray(data, what) {
+  if (!Array.isArray(data)) throw new HttpError(502, `Upstream returned an unexpected ${what} payload`);
+  return data;
+}
+
 export async function getStops(slug, lang) {
   assertSlug(slug);
   assertLang(lang);
   let stops;
   try {
-    stops = await staticCache.wrap(`stops:${slug}:${lang}`, STATIC_TTL_MS, () =>
-      apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/stops`),
-    );
+    stops = await staticCache.wrap(`stops:${slug}:${lang}`, STATIC_TTL_MS, async () => {
+      const list = expectArray(await apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/stops`), 'stops');
+      // A city without data is a 404, so an empty list is the upstream misbehaving,
+      // and cached it would leave the city without stops for a day.
+      if (!list.length) throw new HttpError(502, 'Upstream returned an empty stop list');
+      return list;
+    });
   } catch (err) {
-    // A 404 once the site has answered (it has, if its agency code is known) is
-    // the API holding nothing for that agency. An unknown city 404s earlier, at
-    // its site, and has no agency code.
-    if (err.status === 404 && peekAgencyCode(slug) && !noDataCache.get(slug)) {
+    // The API's own 404 means its site answered and the API holds nothing for that
+    // agency. An unknown city 404s earlier, at its site, and is never marked.
+    if (err.fromApi && err.status === 404 && !noDataCache.get(slug)) {
       noDataCache.set(slug, true, NO_DATA_TTL_MS);
     }
     throw err;
   }
   if (noDataCache.get(slug)) noDataCache.delete(slug);
   // Applied after the cache rather than inside it so entries cached before this
-  // existed are repaired too, not served nameless until they expire.
-  return fillMissingNames(slug, lang, stops);
+  // existed are repaired too, not served incomplete until they expire.
+  return lang === 'el' ? stops : repairEnglish(slug, stops);
 }
 
 /**
- * The English feed has gaps: a few stops come back with `name: null` (two in
- * Heraklion as of 2026-09). A nameless stop crashed the client's search outright,
- * so borrow the Greek name, which has been complete, and fall back to the code.
+ * The English feed has gaps, filled from the Greek one, which has been complete:
+ *  - stops with `name: null` (two in Heraklion, 2026-09). A nameless stop crashed
+ *    the client's search outright. They borrow the Greek name, or the code.
+ *  - stops missing altogether (1 in Larisa, 4 in Serres, 2026-09). In English they
+ *    vanished from the map and search, and a shared link to one closed at once.
+ *    They are added with their Greek name.
  */
-async function fillMissingNames(slug, lang, stops) {
-  if (stops.every((stop) => stop.name)) return stops;
-  const greek = lang === 'el' ? [] : await getStops(slug, 'el').catch(() => []);
-  const greekNames = new Map(greek.map((stop) => [stop.code, stop.name]));
-  return stops.map((stop) =>
-    stop.name ? stop : { ...stop, name: greekNames.get(stop.code) || stop.code },
-  );
+async function repairEnglish(slug, stops) {
+  const greek = await getStops(slug, 'el').catch(() => []);
+  const byCode = new Map(greek.map((stop) => [stop.code, stop]));
+  const listed = new Set(stops.map((stop) => stop.code));
+  const missing = greek.filter((stop) => !listed.has(stop.code));
+  if (!missing.length && stops.every((stop) => stop.name)) return stops;
+  return [
+    ...stops.map((stop) =>
+      stop.name ? stop : { ...stop, name: byCode.get(stop.code)?.name || stop.code },
+    ),
+    ...missing,
+  ];
 }
+
+// Codes a city's stops, lines and routes can have, indexed per stop list.
+const codeIndexes = new WeakMap();
+
+/**
+ * Which stop, line and route codes exist in a city, from its Greek stop list (the
+ * English one lacks a few stops). A code outside them is answered without the
+ * upstream: made-up codes each cost a request from the shared budget (decision 15),
+ * and a flood of them measured 7 of 8 real polls refused. The client loads a city's
+ * stops before anything else, so the list is almost always cached. null when it
+ * cannot be had; then nothing is refused.
+ */
+async function knownCodes(slug) {
+  let stops;
+  try {
+    stops = await getStops(slug, 'el');
+  } catch {
+    return null;
+  }
+  let index = codeIndexes.get(stops);
+  if (!index) {
+    index = { stops: new Set(), lines: new Set(), routes: new Set() };
+    for (const stop of stops) {
+      index.stops.add(String(stop.code));
+      for (const code of stop.lineCodes ?? []) index.lines.add(String(code));
+      for (const code of stop.routeCodes ?? []) index.routes.add(String(code));
+    }
+    codeIndexes.set(stops, index);
+  }
+  return index;
+}
+
+// Whether a stop code is one the city has. A stop list that cannot be had says yes.
+const isKnownStop = async (slug, code) => (await knownCodes(slug))?.stops.has(code) ?? true;
 
 export function getLines(slug, lang) {
   assertSlug(slug);
   assertLang(lang);
-  return staticCache.wrap(`lines:${slug}:${lang}`, STATIC_TTL_MS, () =>
-    apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/lines`),
+  return staticCache.wrap(`lines:${slug}:${lang}`, STATIC_TTL_MS, async () =>
+    expectArray(await apiGet(slug, (agency) => `/api/v1/${lang}/${agency}/lines`), 'lines'),
   );
 }
 
@@ -280,10 +364,13 @@ function normaliseVehicle(vehicle) {
   return { ...vehicle, latitude, longitude, hasPosition };
 }
 
-export function getLiveArrivals(slug, lang, stopCode) {
+export async function getLiveArrivals(slug, lang, stopCode) {
   assertSlug(slug);
   assertLang(lang);
   assertStopCode(stopCode);
+
+  // What the upstream answers for a stop it does not have, without asking it.
+  if (!(await isKnownStop(slug, stopCode))) return { vehicles: [], noService: true, fetchedAt: Date.now() };
 
   return liveCache.wrap(`${slug}:${lang}:${stopCode}`, LIVE_TTL_MS, async () => {
     try {
@@ -291,8 +378,11 @@ export function getLiveArrivals(slug, lang, stopCode) {
         slug,
         (agency) => `/api/v1/${lang}/${agency}/stops/live/${encodeURIComponent(stopCode)}`,
       );
+      // Nothing due is a 404, so a body without the array is not an answer. Taken
+      // as no vehicles, an API in maintenance mode would read as "no buses due".
+      const vehicles = expectArray(data?.vehicles, 'live');
       return {
-        vehicles: (data.vehicles ?? []).map(normaliseVehicle),
+        vehicles: vehicles.map(normaliseVehicle),
         noService: false,
         fetchedAt: Date.now(),
       };
@@ -300,7 +390,7 @@ export function getLiveArrivals(slug, lang, stopCode) {
       // Upstream returns 404 both for an unknown stop and for a known stop with
       // nothing due in the next 30 minutes. The second is by far the common case,
       // so treat it as an empty result rather than an error and let the UI say so.
-      if (err.status === 404) return { vehicles: [], noService: true, fetchedAt: Date.now() };
+      if (err.fromApi && err.status === 404) return { vehicles: [], noService: true, fetchedAt: Date.now() };
       throw err;
     }
   });
@@ -368,10 +458,10 @@ function getDayTimetable(slug, lang, stopCode, day) {
         (agency) => `/api/v1/${lang}/${agency}/trips/stop/${encodeURIComponent(stopCode)}/day/${day}`,
       );
     } catch (err) {
-      if (err.status === 404) return [];
+      if (err.fromApi && err.status === 404) return [];
       throw err;
     }
-    return trips
+    return expectArray(trips, 'timetable')
       .map((trip) => ({
         minute: trip.tripTimeHour * 60 + trip.tripTimeMinute,
         time: trip.tripTime,
@@ -388,7 +478,11 @@ function getDayTimetable(slug, lang, stopCode, day) {
 /**
  * The next few timetabled departures from a stop. Live arrivals only reach 30
  * minutes ahead, so this is what fills the gap when nothing is due — late at
- * night, or on a line that runs hourly. Rolls into tomorrow when today runs out.
+ * night, or on a line that runs hourly. Rolls into the following days when today
+ * runs out, up to the same weekday next week: a stop whose lines do not run on
+ * Sunday said "no more departures" on Saturday evening when only tomorrow was
+ * read. Days past tomorrow are read together, and only for such a stop; most
+ * stops fill the list from today and tomorrow.
  */
 export async function getSchedule(slug, lang, stopCode) {
   assertSlug(slug);
@@ -396,25 +490,29 @@ export async function getSchedule(slug, lang, stopCode) {
   assertStopCode(stopCode);
 
   const now = Date.now();
+  if (!(await isKnownStop(slug, stopCode))) return { departures: [], fetchedAt: now };
   const clock = serviceClock(new Date(now));
-  // Absolute times let the client drop departures as they pass without refetching.
+  const dayTimetable = (ahead) => getDayTimetable(slug, lang, stopCode, (clock.weekday + ahead) % 7);
 
-  const today = await getDayTimetable(slug, lang, stopCode, clock.weekday);
-  const departures = today
-    .filter((trip) => trip.minute >= clock.minute)
-    .slice(0, SCHEDULE_LIMIT)
-    .map(({ minute, ...trip }) => ({
-      ...trip,
-      departsAt: serviceInstant(clock.date, minute),
-      tomorrow: false,
-    }));
-
-  if (departures.length < SCHEDULE_LIMIT) {
-    const tomorrow = await getDayTimetable(slug, lang, stopCode, (clock.weekday + 1) % 7);
-    const date = nextDate(clock.date);
-    for (const { minute, ...trip } of tomorrow.slice(0, SCHEDULE_LIMIT - departures.length)) {
-      departures.push({ ...trip, departsAt: serviceInstant(date, minute), tomorrow: true });
+  const days = [await dayTimetable(0)];
+  // Day 7 is today's weekday again, already fetched: the trips before now, next week.
+  const later = () => Promise.all([2, 3, 4, 5, 6, 7].map(dayTimetable));
+  const departures = [];
+  let date = clock.date;
+  for (let ahead = 0; ahead <= 7 && departures.length < SCHEDULE_LIMIT; ahead += 1) {
+    if (ahead === 1) days.push(await dayTimetable(1));
+    if (ahead === 2) days.push(...(await later()));
+    const trips = ahead === 0 ? days[0].filter((trip) => trip.minute >= clock.minute) : days[ahead];
+    // Absolute times let the client drop departures as they pass without refetching.
+    for (const { minute, ...trip } of trips.slice(0, SCHEDULE_LIMIT - departures.length)) {
+      departures.push({
+        ...trip,
+        departsAt: serviceInstant(date, minute),
+        daysAhead: ahead,
+        tomorrow: ahead === 1, // read by clients from before daysAhead
+      });
     }
+    date = nextDate(date);
   }
 
   return { departures, fetchedAt: now };
@@ -464,13 +562,18 @@ export async function getRouteShape(slug, lineCode, routeCode) {
   assertCode(lineCode, 'line');
   assertCode(routeCode, 'route');
 
+  const known = await knownCodes(slug);
+  if (known && !(known.lines.has(lineCode) && known.routes.has(routeCode))) {
+    throw new HttpError(404, `Route ${routeCode} not found on line ${lineCode}`);
+  }
+
   const routes = await shapeCache.wrap(`${slug}:${lineCode}`, STATIC_TTL_MS, async () => {
     const data = await apiGet(
       slug,
       (agency) => `/api/v1/${agency}/lines/${encodeURIComponent(lineCode)}/points`,
     );
     return Object.fromEntries(
-      data.map((route) => {
+      expectArray(data, 'route points').map((route) => {
         const points = [...route.routePoints]
           .sort((a, b) => a.sequence - b.sequence)
           .map((p) => [Number(Number(p.latitude).toFixed(5)), Number(Number(p.longitude).toFixed(5))])
@@ -496,12 +599,15 @@ export async function getRouteSequence(slug, routeCode) {
   assertSlug(slug);
   assertCode(routeCode, 'route');
 
+  const known = await knownCodes(slug);
+  if (known && !known.routes.has(routeCode)) throw new HttpError(404, `Route ${routeCode} not found`);
+
   const stops = await sequenceCache.wrap(`${slug}:${routeCode}`, STATIC_TTL_MS, async () => {
     const data = await apiGet(
       slug,
       (agency) => `/api/v1/el/${agency}/routes/${encodeURIComponent(routeCode)}/sequence`,
     );
-    return [...data].sort((a, b) => a.sequence - b.sequence).map((entry) => String(entry.code));
+    return [...expectArray(data, 'route sequence')].sort((a, b) => a.sequence - b.sequence).map((entry) => String(entry.code));
   });
   return { routeCode, stops };
 }

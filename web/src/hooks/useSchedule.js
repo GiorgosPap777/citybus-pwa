@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchSchedule } from '../api.js';
 
 // With this many live buses or fewer, the timetable fits beside them and opens by
@@ -37,6 +37,9 @@ const PASSED_GRACE_MS = 60_000;
 const MIN_REFETCH_MS = 60_000;
 // Nor let a list with nothing left to count down sit longer than this.
 const MAX_AGE_MS = 30 * 60_000;
+// After a failed fetch, try again after this, doubling up to the cap.
+const RETRY_BASE_MS = 15_000;
+const RETRY_MAX_MS = 2 * 60_000;
 
 /**
  * Timetabled departures for one stop, fetched while `enabled`. The caller enables
@@ -50,23 +53,58 @@ export function useSchedule(city, lang, stopCode, enabled) {
   const [state, setState] = useState({ key: null, data: null, error: null, receivedAt: 0 });
   const [version, setVersion] = useState(0);
   const key = stopCode ? `${city}:${lang}:${stopCode}` : null;
+  const failures = useRef(0);
 
   useEffect(() => {
     if (!enabled || !key) return undefined;
     const controller = new AbortController();
     fetchSchedule(city, lang, stopCode, controller.signal)
-      .then((data) => setState({ key, data, error: null, receivedAt: Date.now() }))
+      .then((data) => {
+        failures.current = 0;
+        setState({ key, data, error: null, receivedAt: Date.now() });
+      })
       .catch((err) => {
-        if (err.name !== 'AbortError') setState({ key, data: null, error: err, receivedAt: 0 });
+        if (err.name === 'AbortError') return;
+        failures.current += 1;
+        // A failed refetch keeps the list it had. Replacing it with the error took
+        // away the one useful thing on screen while live data was failing too.
+        setState((prev) =>
+          prev.key === key ? { ...prev, error: err } : { key, data: null, error: err, receivedAt: 0 },
+        );
       });
     return () => controller.abort();
   }, [city, lang, stopCode, enabled, key, version]);
+
+  useEffect(() => {
+    failures.current = 0;
+  }, [key]);
 
   const refresh = useCallback(() => setVersion((n) => n + 1), []);
 
   const isCurrent = key !== null && state.key === key;
   const data = isCurrent ? state.data : null;
+  const error = isCurrent ? state.error : null;
   const { receivedAt } = state;
+
+  // A failure is retried by itself, as useStops does: with backoff, and at once
+  // when the phone is back online or the app back in view. It was final: after the
+  // network returned, the timetable said "offline" until the user toggled it.
+  // Keyed on the error object, a new one per failure (see useStops for why).
+  useEffect(() => {
+    if (!enabled || !error) return undefined;
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (failures.current - 1));
+    const timer = setTimeout(refresh, delay);
+    const onVisible = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [enabled, error, refresh]);
 
   // The list is "the next 8 from when it was fetched", and it runs down: a busy
   // stop's eight cover about 20 minutes. Fetched once, it emptied while the stop
@@ -75,7 +113,8 @@ export function useSchedule(city, lang, stopCode, enabled) {
   // when it runs low, or on returning to the app once that point is past. The
   // server keeps day timetables for 12 hours, so this seldom reaches the upstream.
   useEffect(() => {
-    if (!enabled || !data) return undefined;
+    // While a fetch is failing, the retry above does the refetching.
+    if (!enabled || !data || error) return undefined;
     const { departures } = data;
     const runsLowAt = departures.length
       ? departures[Math.max(0, departures.length - REFILL_AT)].departsAt + PASSED_GRACE_MS
@@ -95,11 +134,11 @@ export function useSchedule(city, lang, stopCode, enabled) {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', refetchIfDue);
     };
-  }, [enabled, data, receivedAt, refresh]);
+  }, [enabled, data, error, receivedAt, refresh]);
 
   return {
     data,
-    error: isCurrent ? state.error : null,
+    error,
     loading: enabled && !isCurrent,
     refresh,
   };

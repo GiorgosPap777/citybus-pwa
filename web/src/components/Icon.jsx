@@ -2,6 +2,13 @@
 // on every platform and read as decoration, which is why buttons drawn with them
 // were not recognised as buttons. Paths follow the Feather icon set (MIT).
 const PATHS = {
+  // alert-triangle
+  alert: (
+    <>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </>
+  ),
   bell: (
     <>
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />

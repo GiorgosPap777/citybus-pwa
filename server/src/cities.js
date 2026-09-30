@@ -3,15 +3,21 @@ import { peekAgencyCode, peekNoData } from './citybus.js';
 
 const CACHE_DIR = process.env.CACHE_DIR || '.cache';
 const CITIES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The last list scraped, kept long past CITIES_TTL_MS: when a scrape fails, it is
+// still a far better answer than the seed list.
+const LAST_GOOD = 'last-good';
+const LAST_GOOD_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+// A failed scrape is tried again after this, not a week later.
+const SCRAPE_RETRY_MS = 10 * 60 * 1000;
 const BROWSER_UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
-const citiesCache = new TtlCache({ name: 'cities', dir: CACHE_DIR });
+const citiesCache = new TtlCache({ name: 'cities', dir: CACHE_DIR, failureTtl: () => SCRAPE_RETRY_MS });
 
 /**
- * Used only if citybus.gr is unreachable or restructures its landing page.
- * The live scrape below is the source of truth; this just keeps the city picker
- * populated when it fails.
+ * Used only if citybus.gr is unreachable or restructures its landing page and no
+ * list has ever been scraped. The live scrape below is the source of truth; this
+ * just keeps the city picker populated on a cold start.
  */
 const SEED_SLUGS = [
   'agrinio', 'alexandroupoli', 'arta', 'chalkida', 'chania', 'chios', 'corfu',
@@ -97,21 +103,55 @@ function titleCase(slug) {
   return slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const SEED_LIST = SEED_SLUGS.map((slug) => ({ slug, name: titleCase(slug) }));
+
 async function scrapeCities() {
+  const res = await fetch('https://citybus.gr', {
+    headers: { 'user-agent': BROWSER_UA },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const cities = res.ok ? parseCities(await res.text()) : [];
+  if (!cities.length) throw new Error(`nothing usable (status ${res.status})`);
+  return cities.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
+ * The city list: scraped weekly. A failed scrape used to be cached like a good one,
+ * so a server that started during a citybus.gr blip showed Latin slugs as city
+ * names, in Latin order, for a week, across restarts. Now it falls back to the last
+ * good list, or the seed on a cold start, and the scrape is tried again in minutes.
+ */
+async function cityList() {
   try {
-    const res = await fetch('https://citybus.gr', {
-      headers: { 'user-agent': BROWSER_UA },
-      signal: AbortSignal.timeout(10_000),
+    return await citiesCache.wrap('all', CITIES_TTL_MS, async () => {
+      try {
+        const cities = await scrapeCities();
+        citiesCache.set(LAST_GOOD, cities, LAST_GOOD_TTL_MS);
+        return cities;
+      } catch (err) {
+        // Once per attempt: the failure is cached for SCRAPE_RETRY_MS.
+        const fallback = citiesCache.get(LAST_GOOD) ? 'last good' : 'seed';
+        console.warn(`[cities] scrape failed (${err.message}); serving the ${fallback} list`);
+        throw err;
+      }
     });
-    if (res.ok) {
-      const cities = parseCities(await res.text());
-      if (cities.length > 0) return cities.sort((a, b) => a.slug.localeCompare(b.slug));
-    }
-    console.warn('[cities] scrape returned nothing usable; falling back to seed list');
-  } catch (err) {
-    console.warn(`[cities] scrape failed (${err.message}); falling back to seed list`);
+  } catch {
+    return citiesCache.get(LAST_GOOD) ?? SEED_LIST;
   }
-  return SEED_SLUGS.map((slug) => ({ slug, name: titleCase(slug) }));
+}
+
+let knownSlugs = { list: null, slugs: null };
+
+/**
+ * Whether a slug is a city on citybus.gr. Any other name cannot have data, so it
+ * is answered without spending the upstream budget (decision 15) on a made-up
+ * city. A city added upstream is accepted once the weekly scrape lists it, which
+ * is also when the picker first offers it.
+ */
+export async function isKnownCity(slug) {
+  const list = await cityList();
+  if (knownSlugs.list !== list) knownSlugs = { list, slugs: new Set(list.map((city) => city.slug)) };
+  return knownSlugs.slugs.has(slug);
 }
 
 /**
@@ -121,7 +161,7 @@ async function scrapeCities() {
  * `noData` works the same way: true once a city has been tried and found empty.
  */
 export async function getCities() {
-  const cities = await citiesCache.wrap('all', CITIES_TTL_MS, scrapeCities);
+  const cities = await cityList();
   return cities.map((city) => ({
     ...city,
     agencyCode: peekAgencyCode(city.slug),

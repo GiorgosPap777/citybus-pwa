@@ -27,19 +27,78 @@ import { cityName, errorMessage, translator } from './i18n.js';
 // opens on that stop rather than flashing the home panel first.
 const LINK = takeStopLink();
 
+/**
+ * Copies text: the Clipboard API first, then a selected textarea and the old
+ * copy command, which works in some embedded browsers that refuse the API.
+ */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // refused, or no Clipboard API (an insecure context, an in-app browser)
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.append(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    // not supported
+  }
+  area.remove();
+  return copied;
+}
+
+/** A stop link to copy by hand: selected on focus, with a Copy button that tries again. */
+function SharePanel({ url, onCopy, onClose, t }) {
+  const input = useRef(null);
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+  }, [url]);
+  return (
+    <div className="share-panel">
+      <input
+        ref={input}
+        className="share-url"
+        readOnly
+        value={url}
+        onFocus={(e) => e.target.select()}
+        aria-label={t('stopLink')}
+      />
+      <button type="button" className="btn" onClick={() => onCopy(input.current)}>
+        {t('copy')}
+      </button>
+      <button type="button" className="icon-btn" onClick={onClose} aria-label={t('close')} title={t('close')}>
+        <Icon name="close" size={16} />
+      </button>
+    </div>
+  );
+}
+
 // Stops opened one from another, so back can return through them. Older ones are
 // dropped past this: back is also how an installed app is left, and a dozen
 // presses to get out is worse than losing a stop from five ago.
 const MAX_STOP_TRAIL = 5;
 
 export default function App() {
-  // null means "not chosen yet" — the server's configured default fills in. A link's
-  // city is chosen as if picked in settings: a stop shared from a city is almost
-  // always for someone in it.
-  const [savedCity, setSavedCity] = usePersistentState(
-    'citybus.city.v1',
-    null,
-    (value) => LINK?.city ?? asCity(value),
+  // null means "not chosen yet" — the server's configured default fills in.
+  const [savedCity, setSavedCity] = usePersistentState('citybus.city.v1', null, asCity);
+  // A link's city is shown at once, and saved as if picked in settings once its
+  // stops load: a stop shared from a city is almost always for someone in it. Saved
+  // at once, a misspelt link replaced the user's city with one that does not exist.
+  const [linkCity, setLinkCity] = useState(LINK?.city ?? null);
+  const chooseCity = useCallback(
+    (next) => {
+      setLinkCity(null);
+      setSavedCity(next);
+    },
+    [setSavedCity],
   );
   const [savedLang, setSavedLang] = usePersistentState('citybus.lang.v1', null, asLang);
   const [savedAlertLead, setAlertLead] = usePersistentState('citybus.alertLead.v1', null, asAlertLead);
@@ -62,12 +121,14 @@ export default function App() {
   // A short message over the map: { text, kind: 'info' | 'alert', id }.
   const [toast, setToast] = useState(null);
   const say = useCallback((text, kind = 'info') => setToast({ text, kind, id: Date.now() }), []);
+  // A stop link to copy by hand, when neither a share sheet nor the clipboard works.
+  const [shareLink, setShareLink] = useState(null);
 
   const sheetRef = useRef(null);
   const [collapsed, setCollapsed] = useSheetCollapse(sheetRef);
   const panToNextFix = useRef(false);
 
-  const city = savedCity ?? config?.defaultCity ?? 'irakleio';
+  const city = linkCity ?? savedCity ?? config?.defaultCity ?? 'irakleio';
   const lang = savedLang ?? config?.defaultLang ?? 'el';
   const t = useMemo(() => translator(lang), [lang]);
 
@@ -91,6 +152,7 @@ export default function App() {
     data: arrivals,
     loading: arrivalsLoading,
     error: arrivalsError,
+    receivedAt: arrivalsReceivedAt,
     refreshing,
     refresh,
   } = useLiveArrivals(city, lang, selectedStop?.code, { whileHidden: alertOnOpenStop });
@@ -121,6 +183,28 @@ export default function App() {
   // many it calls at before this one.
   const stopsByCode = useMemo(() => new Map(stops.map((s) => [s.code, s])), [stops]);
   const focusedBus = focus ? arrivals?.vehicles.find((v) => v.vehicleCode === focus.vehicleCode) : null;
+
+  // A followed bus leaves the list once it has passed the stop. Its route stayed
+  // drawn, with nothing saying it had gone. Two answers without it, not one: the
+  // feed drops a bus for a single answer now and then.
+  const focusMissing = useRef({ code: null, count: 0, minutes: null });
+  useEffect(() => {
+    if (!focus || !arrivals) return;
+    const seen = focusMissing.current.code === focus.vehicleCode ? focusMissing.current : null;
+    if (focusedBus) {
+      focusMissing.current = { code: focus.vehicleCode, count: 0, minutes: focusedBus.departureMins };
+      return;
+    }
+    const count = (seen?.count ?? 0) + 1;
+    focusMissing.current = { code: focus.vehicleCode, count, minutes: seen?.minutes ?? null };
+    if (count < 2) return;
+    // The focus is a layer, and useBackButton pops its history entry when the
+    // layer count drops. The map and the sheet stay as they are.
+    setFocus(null);
+    const passed = seen?.minutes != null && seen.minutes <= 1;
+    say(t(passed ? 'busPassed' : 'busGone', { line: focus.lineCode }));
+    // Keyed on the answers alone, like the alert: each one is counted once.
+  }, [arrivals]);
   const progress = useMemo(
     () => routeProgress(routeStops, stopsByCode, focusedBus, selectedStop?.code),
     [routeStops, stopsByCode, focusedBus, selectedStop?.code],
@@ -141,6 +225,18 @@ export default function App() {
 
   const { gripProps, onHandleClick } = useSheetDrag(sheetRef, collapsed, setCollapsed);
 
+  // The link's city is adopted once its stops load, or dropped if it has none: a
+  // typo, or a city without data. Dropping it returns to the saved city.
+  useEffect(() => {
+    if (!linkCity || linkCity !== city) return;
+    if (stops.length) {
+      chooseCity(linkCity);
+    } else if (stopsError?.status === 404) {
+      setLinkCity(null);
+      say(t('linkCityUnavailable'));
+    }
+  }, [linkCity, city, stops, stopsError, chooseCity, say, t]);
+
   // A stop from one city is meaningless in another. Only on a change: on the first
   // render it would close a stop opened from a link.
   const shownCity = useRef(city);
@@ -153,10 +249,22 @@ export default function App() {
     openSheet('home');
   }, [city, openSheet]);
 
+  // A message's time on screen starts only while the app is in view. An alert
+  // that fired in the background, with notifications refused, left nothing to see
+  // on return: its message had timed out unseen.
   useEffect(() => {
     if (!toast) return undefined;
-    const timer = setTimeout(() => setToast(null), toast.kind === 'alert' ? 10_000 : 4_000);
-    return () => clearTimeout(timer);
+    let timer = null;
+    const start = () => {
+      if (document.hidden || timer) return;
+      timer = setTimeout(() => setToast(null), toast.kind === 'alert' ? 10_000 : 4_000);
+    };
+    start();
+    document.addEventListener('visibilitychange', start);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', start);
+    };
   }, [toast]);
 
   const panToStop = useCallback((stop) => {
@@ -315,7 +423,9 @@ export default function App() {
     }
   }, [geo.position]);
 
-  // The system share sheet where there is one (phones), else the clipboard.
+  // The system share sheet where there is one (phones), else the clipboard, else
+  // the link in a panel to copy by hand. It used to be shown in a message that went
+  // after 4 seconds and closed when tapped, which is how one tries to select it.
   const shareStop = useCallback(async () => {
     if (!selectedStop) return;
     const url = stopLinkUrl(city, selectedStop.code);
@@ -327,13 +437,25 @@ export default function App() {
         if (err.name === 'AbortError') return; // the user closed the share sheet
       }
     }
-    try {
-      await navigator.clipboard.writeText(url);
-      say(t('linkCopied'));
-    } catch {
-      say(url); // no clipboard either: show it, to copy by hand
-    }
+    if (await copyText(url)) say(t('linkCopied'));
+    else setShareLink(url);
   }, [city, selectedStop, say, t]);
+
+  const copyShareLink = useCallback(
+    async (input) => {
+      if (await copyText(shareLink)) {
+        setShareLink(null);
+        say(t('linkCopied'));
+      } else {
+        input?.select(); // left selected, for the system's own copy
+      }
+    },
+    [shareLink, say, t],
+  );
+
+  useEffect(() => {
+    setShareLink(null);
+  }, [selectedStop?.code]);
 
   const toggleSettings = () =>
     sheet === 'settings' ? openSheet(selectedStop ? 'stop' : 'home') : openSheet('settings');
@@ -444,7 +566,7 @@ export default function App() {
             cities={cities}
             city={city}
             onCityChange={(next) => {
-              setSavedCity(next);
+              chooseCity(next);
               openSheet('home');
             }}
             lang={lang}
@@ -467,13 +589,14 @@ export default function App() {
             onToggleTimetable={toggleTimetable}
             loading={arrivalsLoading}
             error={arrivalsError}
+            receivedAt={arrivalsReceivedAt}
             refreshing={refreshing}
             onRefresh={refreshStop}
             onClose={closeStop}
             isFavourite={isFavourite}
             onToggleFavourite={() => favourites.toggle(city, selectedStop)}
             focusedVehicle={focus?.vehicleCode}
-            stopsAway={progress?.stopsAway}
+            stopsBefore={progress?.stopsBefore}
             onFocusVehicle={focusVehicle}
             onUnfocus={unfocusVehicle}
             alert={alertOnOpenStop ? alert : null}
@@ -482,13 +605,14 @@ export default function App() {
             onShare={shareStop}
             collapsed={collapsed}
             gripProps={gripProps}
+            lang={lang}
             t={t}
           />
         )}
 
         {sheet === 'home' && (
           <>
-            {stopsLoading && <p className="state">{t('loadingStops')}</p>}
+            {stopsLoading && !stopsError && <p className="state">{t('loadingStops')}</p>}
             {stopsError && (
               <div className="state error" role="status">
                 {/* A few citybus.gr cities have a site but no data in the API. That
@@ -498,14 +622,15 @@ export default function App() {
                 ) : (
                   <>
                     <p>{errorMessage(stopsError, t)}</p>
-                    <button type="button" className="btn" onClick={retryStops}>
-                      {t('retry')}
+                    <button type="button" className="btn" onClick={retryStops} disabled={stopsLoading}>
+                      {stopsLoading ? t('loading') : t('retry')}
                     </button>
                   </>
                 )}
               </div>
             )}
-            {!stopsLoading && (
+            {/* During a retry the failure stays, and so do the favourites. */}
+            {(!stopsLoading || stopsError) && (
               <HomePanel
                 stops={stops}
                 stopsUnavailable={!!stopsError}
@@ -515,7 +640,7 @@ export default function App() {
                 onRequestLocation={requestLocation}
                 cities={cities}
                 city={city}
-                onSwitchCity={setSavedCity}
+                onSwitchCity={chooseCity}
                 collapsed={collapsed}
                 onExpand={() => setCollapsed(false)}
                 lang={lang}
@@ -528,6 +653,14 @@ export default function App() {
 
       {/* Always in the page, so screen readers announce what appears in it. */}
       <div className="toast-region" aria-live="polite">
+        {shareLink && (
+          <SharePanel
+            url={shareLink}
+            onCopy={copyShareLink}
+            onClose={() => setShareLink(null)}
+            t={t}
+          />
+        )}
         {toast && (
           <button
             key={toast.id}

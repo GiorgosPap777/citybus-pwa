@@ -3,8 +3,9 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import express from 'express';
 
-import { getCities } from './cities.js';
+import { getCities, isKnownCity } from './cities.js';
 import {
+  assertSlug,
   getLines,
   getLiveArrivals,
   getRouteSequence,
@@ -41,6 +42,22 @@ app.get('/api/cities', route(async (_req, res) => {
   res.set('cache-control', 'public, max-age=3600');
   res.json(await getCities());
 }));
+
+// A name that is not a city on citybus.gr is refused here, before it can spend the
+// upstream budget (decision 15). The slug is validated first, so a hostile one is
+// still a 400, not a lookup.
+app.param('city', (req, _res, next, slug) => {
+  try {
+    assertSlug(slug);
+  } catch (err) {
+    next(err);
+    return;
+  }
+  isKnownCity(slug).then(
+    (known) => next(known ? undefined : new HttpError(404, `No citybus site for city "${slug}"`)),
+    next,
+  );
+});
 
 app.get('/api/:city/stops', route(async (req, res) => {
   const stops = await getStops(req.params.city, langOf(req));
@@ -120,8 +137,9 @@ app.use((err, req, res, _next) => {
   const status = err instanceof HttpError ? err.status : clientError ? err.status : 500;
   // Upstream trouble gets one line: its message already says what failed, and in
   // an outage every poll lands here. Stack traces are kept for our own bugs.
+  // Budget refusals are counted and logged in citybus.js instead (`logged`).
   if (status >= 500 && err instanceof HttpError) {
-    console.error(`[server] ${status} ${req.method} ${req.path}: ${err.message}`);
+    if (!err.logged) console.error(`[server] ${status} ${req.method} ${req.path}: ${err.message}`);
   } else if (status >= 500) {
     console.error('[server]', err);
   }

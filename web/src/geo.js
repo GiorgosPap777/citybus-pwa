@@ -74,9 +74,12 @@ const MAX_OFF_ROUTE_M = 300;
 
 /**
  * Where a bus is along its route: `passed`, the index in `sequence` of the last
- * stop it has left, and `stopsAway`, how many stops it calls at up to and
- * including `targetCode` (1 = the next one). null when it cannot be told: no GPS
- * fix, or the bus is not near its route.
+ * stop it has left, and `stopsBefore`, how many stops it calls at before
+ * `targetCode` (0: the user's stop is its next). null when it cannot be told: no
+ * GPS fix, or the bus is not near its route.
+ *
+ * The user's own stop is not counted. Reported: with one stop between the bus and
+ * the user, "2 stops away" read as wrong; people count the stops in between.
  *
  * The bus is placed on the stretch between two consecutive stops it lies closest
  * to. Only stretches before the user's stop count: the stop is listing the bus
@@ -97,9 +100,9 @@ export function routeProgress(sequence, stopsByCode, vehicle, targetCode) {
       { lat: a.latitude, lon: a.longitude },
       { lat: b.latitude, lon: b.longitude },
     );
-    if (!best || distance < best.distance) best = { passed: i, stopsAway: target - i, distance };
+    if (!best || distance < best.distance) best = { passed: i, stopsBefore: target - i - 1, distance };
   }
   return best && best.distance <= MAX_OFF_ROUTE_M
-    ? { passed: best.passed, stopsAway: best.stopsAway }
+    ? { passed: best.passed, stopsBefore: best.stopsBefore }
     : null;
 }

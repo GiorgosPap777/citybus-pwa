@@ -19,7 +19,10 @@ const MIN_REFRESH_GAP_MS = 3000;
  * The browser may still slow the timer down in the background.
  */
 export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = {}) {
-  const [state, setState] = useState({ key: null, data: null, error: null, loading: false, refreshing: false });
+  // `receivedAt` is this device's clock at the answer. The server's `fetchedAt`,
+  // read against a phone's clock, said "120 s ago" right after a poll on a phone
+  // two minutes fast.
+  const [state, setState] = useState({ key: null, data: null, receivedAt: 0, error: null, loading: false, refreshing: false });
   const key = stopCode ? `${city}:${lang}:${stopCode}` : null;
   const hasData = useRef(false);
   const refreshNow = useRef(() => {});
@@ -33,7 +36,7 @@ export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = 
   useEffect(() => {
     hasData.current = false;
     if (!stopCode) {
-      setState({ key: null, data: null, error: null, loading: false, refreshing: false });
+      setState({ key: null, data: null, receivedAt: 0, error: null, loading: false, refreshing: false });
       return undefined;
     }
 
@@ -50,13 +53,13 @@ export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = 
       setState((prev) =>
         hasData.current
           ? { ...prev, refreshing: true }
-          : { key, data: null, error: null, loading: true, refreshing: false },
+          : { key, data: null, receivedAt: 0, error: null, loading: true, refreshing: false },
       );
       try {
         const data = await fetchLiveArrivals(city, lang, stopCode, controller.signal);
         if (cancelled) return;
         hasData.current = true;
-        setState({ key, data, error: null, loading: false, refreshing: false });
+        setState({ key, data, receivedAt: Date.now(), error: null, loading: false, refreshing: false });
       } catch (err) {
         if (cancelled || err.name === 'AbortError') return;
         // Keep the last good data on screen; a dropped poll should not blank the list.
@@ -75,7 +78,9 @@ export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = 
     // app switch — which on a phone is constant.
     const cycle = async () => {
       clearTimeout(timer);
-      if (inFlight) return; // the running fetch will reschedule when it settles
+      // The running fetch will reschedule when it settles, which api.js's timeout
+      // guarantees: a request that never settled used to stop the poll for good.
+      if (inFlight) return;
       inFlight = true;
       try {
         await load();
@@ -135,6 +140,8 @@ export function useLiveArrivals(city, lang, stopCode, { whileHidden = false } = 
   // `state` still holds the previous stop's arrivals. Anything deciding from them
   // (the timetable's default, the map's buses) would act on the wrong stop.
   const current =
-    state.key === key ? state : { data: null, error: null, loading: key !== null, refreshing: false };
+    state.key === key
+      ? state
+      : { data: null, receivedAt: 0, error: null, loading: key !== null, refreshing: false };
   return { ...current, refresh };
 }

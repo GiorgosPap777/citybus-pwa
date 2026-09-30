@@ -55,8 +55,9 @@ const STRINGS = {
     noData: 'χωρίς δεδομένα',
     share: 'Κοινοποίηση στάσης',
     linkCopied: 'Ο σύνδεσμος της στάσης αντιγράφηκε.',
-    stopsAway: 'σε {n} στάσεις',
-    nextStopAway: 'στην επόμενη στάση',
+    stopsAway: 'απέχει {n} στάσεις',
+    oneStopAway: 'απέχει 1 στάση',
+    nextStopYours: 'επόμενη η στάση σας',
     farFromCity: 'Η πλησιέστερη στάση αυτής της πόλης απέχει {distance} από εσάς.',
     switchCity: 'Αλλαγή σε: {city}',
     alertLead: 'Ειδοποίηση πριν από',
@@ -68,6 +69,14 @@ const STRINGS = {
     alertBody: 'Φτάνει στη στάση {stop} σε {n}′.',
     alertBodyNow: 'Φτάνει τώρα στη στάση {stop}.',
     alertLost: 'Το {line} δεν εμφανίζεται πια στις αφίξεις. Η ειδοποίηση ακυρώθηκε.',
+    minutesAgo: 'πριν {n}′',
+    busPassed: 'Το {line} πέρασε από τη στάση.',
+    busGone: 'Το {line} δεν εμφανίζεται πια στις αφίξεις της στάσης.',
+    linkCityUnavailable: 'Η πόλη αυτού του συνδέσμου δεν είναι διαθέσιμη.',
+    stopLink: 'Σύνδεσμος στάσης',
+    copy: 'Αντιγραφή',
+    offlineShort: 'χωρίς σύνδεση',
+    noAnswerShort: 'χωρίς απάντηση',
   },
   en: {
     appName: 'City Bus',
@@ -124,7 +133,8 @@ const STRINGS = {
     share: 'Share stop',
     linkCopied: 'Link to this stop copied.',
     stopsAway: '{n} stops away',
-    nextStopAway: 'next stop',
+    oneStopAway: '1 stop away',
+    nextStopYours: 'your stop is next',
     farFromCity: 'The nearest stop in this city is {distance} away.',
     switchCity: 'Switch to {city}',
     alertLead: 'Alert me before',
@@ -136,6 +146,14 @@ const STRINGS = {
     alertBody: 'Arrives at {stop} in {n} min.',
     alertBodyNow: 'Arriving at {stop} now.',
     alertLost: '{line} is no longer listed. Alert cancelled.',
+    minutesAgo: '{n} min ago',
+    busPassed: '{line} has passed this stop.',
+    busGone: '{line} is no longer listed at this stop.',
+    linkCityUnavailable: "The city in this link isn't available.",
+    stopLink: 'Link to this stop',
+    copy: 'Copy',
+    offlineShort: 'offline',
+    noAnswerShort: 'no answer',
   },
 };
 
@@ -196,8 +214,15 @@ export function cityName(city, lang) {
 export function errorMessage(err, t) {
   // fetch rejects with a TypeError when the request never got an answer.
   if (err instanceof TypeError || navigator.onLine === false) return t('offline');
-  if (err?.status >= 500) return t('serviceDown');
+  // A request given up after waiting (api.js) is a service not answering.
+  if (err?.name === 'TimeoutError' || err?.status >= 500) return t('serviceDown');
   return t('error');
+}
+
+/** The same, in a word or two, for a note beside other content. */
+export function errorShort(err, t) {
+  if (err instanceof TypeError || navigator.onLine === false) return t('offlineShort');
+  return t('noAnswerShort');
 }
 
 export function translator(lang) {

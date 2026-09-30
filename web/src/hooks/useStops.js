@@ -18,7 +18,13 @@ export function useStops(city, lang) {
 
   useEffect(() => {
     const controller = new AbortController();
-    setState({ stops: [], city: null, lang: null, loading: true, error: null });
+    // A retry keeps the failure on screen while it runs. Cleared, it hid the error,
+    // the retry button and the favourites behind "Loading stops…" at every attempt.
+    setState((prev) =>
+      prev.error && prev.city === city && prev.lang === lang
+        ? { ...prev, loading: true }
+        : { stops: [], city: null, lang: null, loading: true, error: null },
+    );
 
     fetchStops(city, lang, controller.signal)
       .then((stops) => {

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { FAR_FROM_CITY_M, formatDistance, nearestCity, nearestStops } from '../geo.js';
 import { cityName } from '../i18n.js';
-import { fold, soundOf, soundsOfQuery } from '../search.js';
+import { fold, matchesStems, soundOf, soundsOfQuery, stemsOfQuery } from '../search.js';
 
 const MAX_RESULTS = 25;
 
@@ -37,33 +37,36 @@ export default function HomePanel({
   // Folded once per stop list, not once per keystroke.
   const searchIndex = useMemo(
     () =>
-      stops.map((stop) => ({
-        stop,
-        code: fold(stop.code),
-        name: fold(stop.name),
-        sound: soundOf(stop.name),
-      })),
+      stops.map((stop) => {
+        const sound = soundOf(stop.name);
+        return { stop, code: fold(stop.code), name: fold(stop.name), sound, words: sound.split(' ') };
+      }),
     [stops],
   );
 
-  // Matches as typed come first. Matches by sound (Greeklish, a misplaced η or ω)
-  // only fill the list after them, so they never push an exact match out.
+  // Matches as typed come first. Then matches by sound (Greeklish, a misplaced η
+  // or ω), then by words in any order with any ending (search.js). Each only fills
+  // the list after the ones before, so it never pushes a closer match out.
   const results = useMemo(() => {
     const needle = fold(query).trim();
     if (!needle) return null;
     const matches = searchIndex.filter(
       (entry) => entry.code.includes(needle) || entry.name.includes(needle),
     );
-    if (matches.length < MAX_RESULTS) {
-      const sounds = soundsOfQuery(query);
-      const exact = new Set(matches);
+    const found = new Set(matches);
+    const fill = (test) => {
       for (const entry of searchIndex) {
-        if (matches.length >= MAX_RESULTS) break;
-        if (!exact.has(entry) && sounds.some((sound) => entry.sound.includes(sound))) {
+        if (matches.length >= MAX_RESULTS) return;
+        if (!found.has(entry) && test(entry)) {
           matches.push(entry);
+          found.add(entry);
         }
       }
-    }
+    };
+    const sounds = soundsOfQuery(query);
+    fill((entry) => sounds.some((sound) => entry.sound.includes(sound)));
+    const readings = stemsOfQuery(query);
+    fill((entry) => readings.some((stems) => matchesStems(stems, entry.words)));
     return matches.slice(0, MAX_RESULTS).map((entry) => entry.stop);
   }, [query, searchIndex]);
 

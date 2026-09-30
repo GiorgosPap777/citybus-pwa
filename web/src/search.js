@@ -73,3 +73,26 @@ export function soundsOfQuery(query) {
     .map((sound) => sound.trim())
     .filter(Boolean);
 }
+
+// A query word this long may differ from the name in its last two letters.
+const STEM_FROM = 5;
+
+/**
+ * A query as words to find in a name, in any order, each allowed a different
+ * ending. Names are mostly genitive ("ΑΓΙΟΥ ΝΙΚΟΛΑΟΥ", "ΧΑΝΙΩΝ") while people type
+ * the nominative ("agios nikolaos", "hania"), and whole-query matching found
+ * neither, nor "eleftherias plateia" for ΠΛΑΤΕΙΑ ΕΛΕΥΘΕΡΙΑΣ. Two letters covers
+ * -ος/-ου, -α/-ων and -η/-ης. One list of stems per reading of the query.
+ */
+export function stemsOfQuery(query) {
+  return soundsOfQuery(query).map((sound) =>
+    sound
+      .split(' ')
+      .filter(Boolean)
+      .map((word) => (word.length >= STEM_FROM ? word.slice(0, -2) : word)),
+  );
+}
+
+/** Whether every stem starts some word of a name, given the name's sound as words. */
+export const matchesStems = (stems, words) =>
+  stems.every((stem) => words.some((word) => word.startsWith(stem)));

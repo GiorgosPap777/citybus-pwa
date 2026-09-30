@@ -1,24 +1,51 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
-import { errorMessage } from '../i18n.js';
+import { errorMessage, errorShort } from '../i18n.js';
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-function Ago({ fetchedAt, t }) {
+// Past this, the minute counts on screen are old enough to be wrong: two polls
+// (15 s apart) have failed or not been made.
+const STALE_MS = 45_000;
+
+/** Re-renders every few seconds, for text that ages ("12 s ago"). */
+function useTicking(ms = 5000) {
   const [, force] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => force((n) => n + 1), 5000);
+    const timer = setInterval(() => force((n) => n + 1), ms);
     return () => clearInterval(timer);
-  }, []);
+  }, [ms]);
+}
 
-  if (!fetchedAt) return null;
-  const seconds = Math.max(0, Math.round((Date.now() - fetchedAt) / 1000));
+// Seconds, then minutes: "1834 s ago" was the display after a long stall.
+function ageLabel(receivedAt, t) {
+  const seconds = Math.max(0, Math.round((Date.now() - receivedAt) / 1000));
+  if (seconds < 5) return t('justNow');
+  if (seconds < 60) return t('secondsAgo', { n: seconds });
+  return t('minutesAgo', { n: Math.floor(seconds / 60) });
+}
+
+/** Timed from when this device received the answer, not the server's clock. */
+function Ago({ receivedAt, t }) {
+  useTicking();
+  if (!receivedAt) return null;
   return (
     <span className="ago">
-      {t('updated')} {seconds < 5 ? t('justNow') : t('secondsAgo', { n: seconds })}
+      {t('updated')} {ageLabel(receivedAt, t)}
     </span>
   );
+}
+
+// A timetabled departure's day, when it is not today: "tomorrow", then weekdays.
+// Greek time, like the times themselves.
+function dayLabel(departure, lang, t) {
+  if (departure.daysAhead >= 2) {
+    return new Intl.DateTimeFormat(lang, { weekday: 'short', timeZone: 'Europe/Athens' }).format(
+      departure.departsAt,
+    );
+  }
+  return departure.tomorrow ? t('tomorrow') : null;
 }
 
 function LineBadge({ line }) {
@@ -36,7 +63,8 @@ function LineBadge({ line }) {
   );
 }
 
-const stopsAwayLabel = (n, t) => (n === 1 ? t('nextStopAway') : t('stopsAway', { n }));
+const stopsBeforeLabel = (n, t) =>
+  n === 0 ? t('nextStopYours') : n === 1 ? t('oneStopAway') : t('stopsAway', { n });
 
 function Eta({ minutes, t }) {
   if (minutes <= 0) return <span className="eta now">{t('arriving')}</span>;
@@ -56,9 +84,17 @@ function Eta({ minutes, t }) {
  * While a bus is followed, a Back chip leads the row. Following a bus collapses
  * the sheet, and the only way back to the full list was to know the header
  * expands it — users did not, and closed the stop instead.
+ *
+ * It never says more than it knows. With live data failing before any arrived,
+ * it said "no buses in the next 30 minutes", and someone glancing at it would
+ * walk away; it now gives the error. Chips from an answer that is old are dimmed
+ * behind a ⚠ and what is wrong: the failure, or the age when polls have simply
+ * stopped for STALE_MS. They kept counting frozen minutes as if live.
  */
-function Peek({ vehicles, loading, focusedVehicle, stopsAway, onFocusVehicle, onUnfocus, t }) {
+function Peek({ vehicles, hasData, error, receivedAt, loading, focusedVehicle, stopsBefore, onFocusVehicle, onUnfocus, t }) {
+  useTicking();
   if (loading) return null;
+  const stale = hasData && (!!error || Date.now() - receivedAt > STALE_MS);
   const back = focusedVehicle && (
     <button
       type="button"
@@ -71,20 +107,41 @@ function Peek({ vehicles, loading, focusedVehicle, stopsAway, onFocusVehicle, on
       {t('back')}
     </button>
   );
+  const staleNote = stale && (
+    <span className="peek-note" title={error ? errorMessage(error, t) : undefined}>
+      <Icon name="alert" size={14} />
+      {error ? errorShort(error, t) : ageLabel(receivedAt, t)}
+    </span>
+  );
   if (!vehicles.length) {
-    return back ? (
-      <div className="peek">
+    const hint = (
+      <p className={`hint ${!hasData && error ? 'error' : ''}`}>
+        {!hasData && error ? errorMessage(error, t) : t('noService')}
+      </p>
+    );
+    return back || staleNote ? (
+      <div className={`peek ${stale ? 'stale' : ''}`}>
         {back}
-        <p className="hint">{t('noService')}</p>
+        {staleNote}
+        {hint}
       </div>
     ) : (
-      <p className="hint">{t('noService')}</p>
+      hint
     );
   }
+  // The followed bus leads, after Back. Its chip carries the stop count, and in its
+  // place by arrival time it was cut off at the edge, or off screen altogether.
+  const shown = focusedVehicle
+    ? [
+        ...vehicles.filter((vehicle) => vehicle.vehicleCode === focusedVehicle),
+        ...vehicles.filter((vehicle) => vehicle.vehicleCode !== focusedVehicle),
+      ]
+    : vehicles;
   return (
-    <div className="peek">
+    <div className={`peek ${stale ? 'stale' : ''}`}>
       {back}
-      {vehicles.map((vehicle) => {
+      {staleNote}
+      {shown.map((vehicle) => {
         const focused = vehicle.vehicleCode === focusedVehicle;
         return (
           <button
@@ -97,8 +154,8 @@ function Peek({ vehicles, loading, focusedVehicle, stopsAway, onFocusVehicle, on
           >
             <LineBadge line={vehicle} />
             <Eta minutes={vehicle.departureMins} t={t} />
-            {focused && stopsAway != null && (
-              <small className="chip-note">{stopsAwayLabel(stopsAway, t)}</small>
+            {focused && stopsBefore != null && (
+              <small className="chip-note">{stopsBeforeLabel(stopsBefore, t)}</small>
             )}
           </button>
         );
@@ -141,7 +198,7 @@ function AlertBell({ vehicle, alert, lead, onToggle, t }) {
  * and always open. Beside live arrivals it is optional, so its heading becomes a
  * toggle: one line when closed, which is all the space a busy stop can spare.
  */
-function ScheduleList({ schedule, open = true, onToggle, t }) {
+function ScheduleList({ schedule, open = true, onToggle, lang, t }) {
   const sectionRef = useRef(null);
   const reveal = useRef(false);
 
@@ -189,7 +246,9 @@ function ScheduleList({ schedule, open = true, onToggle, t }) {
       </section>
     );
   }
-  if (schedule.error || !schedule.data) {
+  // A failed refetch keeps the list it had (useSchedule); the error shows only
+  // when there is nothing else.
+  if (!schedule.data) {
     // Alone, a failed timetable says nothing rather than add a second error to
     // "no buses"; behind its toggle, the user asked for it and gets an answer.
     return onToggle ? (
@@ -221,7 +280,7 @@ function ScheduleList({ schedule, open = true, onToggle, t }) {
                   <small>{d.routeName}</small>
                 </span>
                 <span className="eta scheduled">
-                  {d.tomorrow && <i>{t('tomorrow')}</i>}
+                  {dayLabel(d, lang, t) && <i>{dayLabel(d, lang, t)}</i>}
                   {d.time}
                 </span>
               </div>
@@ -241,13 +300,14 @@ export default function StopSheet({
   onToggleTimetable,
   loading,
   error,
+  receivedAt,
   refreshing,
   onRefresh,
   onClose,
   isFavourite,
   onToggleFavourite,
   focusedVehicle,
-  stopsAway,
+  stopsBefore,
   onFocusVehicle,
   onUnfocus,
   alert,
@@ -256,6 +316,7 @@ export default function StopSheet({
   onShare,
   collapsed,
   gripProps,
+  lang,
   t,
 }) {
   const vehicles = arrivals?.vehicles ?? [];
@@ -300,9 +361,12 @@ export default function StopSheet({
       {collapsed ? (
         <Peek
           vehicles={vehicles}
+          hasData={!!arrivals}
+          error={error}
+          receivedAt={receivedAt}
           loading={loading}
           focusedVehicle={focusedVehicle}
-          stopsAway={stopsAway}
+          stopsBefore={stopsBefore}
           onFocusVehicle={onFocusVehicle}
           onUnfocus={onUnfocus}
           t={t}
@@ -326,7 +390,7 @@ export default function StopSheet({
 
           {/* With no live buses, whether none are due or live data failed, the
               timetable is the only answer left. */}
-          {!loading && vehicles.length === 0 && <ScheduleList schedule={schedule} t={t} />}
+          {!loading && vehicles.length === 0 && <ScheduleList schedule={schedule} lang={lang} t={t} />}
 
           {vehicles.length > 0 && (
             <ul className="arrivals">
@@ -346,8 +410,8 @@ export default function StopSheet({
                       <span className="line-text">
                         <strong>{vehicle.lineName}</strong>
                         <small>{vehicle.routeName}</small>
-                        {focused && stopsAway != null && (
-                          <small className="stops-away">{stopsAwayLabel(stopsAway, t)}</small>
+                        {focused && stopsBefore != null && (
+                          <small className="stops-away">{stopsBeforeLabel(stopsBefore, t)}</small>
                         )}
                       </span>
                       <span className="row-hint" aria-hidden="true">
@@ -373,13 +437,14 @@ export default function StopSheet({
               schedule={schedule}
               open={timetableShown}
               onToggle={onToggleTimetable}
+              lang={lang}
               t={t}
             />
           )}
 
-          {arrivals?.fetchedAt && (
+          {arrivals && (
             <footer className="sheet-foot">
-              <Ago fetchedAt={arrivals.fetchedAt} t={t} />
+              <Ago receivedAt={receivedAt} t={t} />
               <button
                 type="button"
                 className="icon-btn"

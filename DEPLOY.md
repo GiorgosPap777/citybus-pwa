@@ -123,6 +123,14 @@ docker compose pull && docker compose up -d
 The service worker is set to `autoUpdate`, so phones pick up the new version on next launch without
 being reinstalled.
 
+`pull` updates the image, not your copy of `docker-compose.yml`. Compare it with the repository's
+now and then. 1.3.0 added `mem_limit: 256m`, a backstop the server relies on if its memory ever runs
+away, and a compose file copied before that runs without it. Check with:
+
+```bash
+docker inspect citybus --format '{{.HostConfig.Memory}}'   # 268435456, not 0
+```
+
 To pin a specific release instead of tracking `latest`, set the tag explicitly in
 `docker-compose.yml`, e.g. `image: giorgospap777/citybus-pwa:1.0.0`.
 

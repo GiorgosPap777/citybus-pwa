@@ -134,14 +134,21 @@ All are normalised in `server/src/citybus.js` so nothing downstream has to know:
 1. `latitude`/`longitude` are **numbers** in `/stops` but **strings** in `/stops/live`.
 2. A bus with no GPS fix reports latitude `"0"`. Those get `hasPosition: false`. They still belong in
    the arrivals list — the ETA is valid — but must not be drawn on the map.
-3. The English `/stops` feed has **stops with `name: null`** (Heraklion `2196` and `0822` as of
-   2026-09). Observed bug: the client's search called `.toLocaleLowerCase()` on one and the whole app
-   went blank. `fillMissingNames` borrows the Greek name (then the code). It runs *after* the cache
-   read, so entries cached before the fix are repaired too.
+3. The English `/stops` feed has gaps. Some stops have **`name: null`** (Heraklion `2196` and `0822`
+   as of 2026-09). Observed bug: the client's search called `.toLocaleLowerCase()` on one and the
+   whole app went blank. Others are **missing altogether**: Larisa `0501`, and Serres `13043`,
+   `12340`, `13021` and `13022` (2026-09-30). In English they vanished from the map and search, and a
+   shared link to one closed at once. `repairEnglish` fills both from the Greek list: the Greek name
+   (then the code) for a nameless stop, and each missing stop as it is in Greek. It runs *after* the
+   cache read, so entries cached before the fix are repaired too.
 
 An unknown city slug is also worth knowing about: `{slug}.citybus.gr` 302s to the landing page rather
 than 404ing. `fetch` follows that silently, so `fetchSite` checks the final hostname and reports 404 —
-otherwise it surfaces as a misleading "page layout may have changed" 502.
+otherwise it surfaces as a misleading "page layout may have changed" 502. A slug seldom gets that far
+now: `index.js` refuses one that is not in the scraped city list (decision 15). That 404 is not the
+API's own, so it stays an error. Only a 404 that `apiGet` marks `fromApi` is read as "no buses due",
+"no trips that day" or "no data for the agency". Read as "no service", a link with a misspelt city
+answered "no buses due".
 
 ---
 
@@ -170,9 +177,13 @@ difference at street zoom. Keep payloads in that range. It is sent `public, max-
 service worker keeps shapes in their own `CacheFirst` cache (`citybus-shapes`), so a route is
 downloaded once a week per device, not once per tap.
 
-`/schedule` returns the next 8 timetabled departures from now, rolling into tomorrow when today runs
-out. Each has `time` (`"HH:MM"`), `departsAt` (epoch ms, so the client can drop departures as they
-pass without refetching; see decision 16 for how it is computed), `tomorrow`, and the line fields. It answers "when is the next bus?" where
+`/schedule` returns the next 8 timetabled departures from now, rolling into the following days when
+today runs out, up to the same weekday next week. Each has `time` (`"HH:MM"`), `departsAt` (epoch
+ms, so the client can drop departures as they pass without refetching; see decision 16 for how it is
+computed), `daysAhead` (0 today, 1 tomorrow, …), `tomorrow` (kept for clients from before
+`daysAhead`), and the line fields. The client labels a later day by its weekday. Reading only today
+and tomorrow said "no more departures" on a Saturday evening at a stop whose lines skip Sunday. Days
+past tomorrow are fetched only for a stop that today and tomorrow cannot fill, all at once. It answers "when is the next bus?" where
 live data (30 minutes ahead) cannot, so it is **always shown when live arrivals are empty**. Beside live
 buses it sits behind a one-line toggle, open by default at a stop with 3 or fewer live buses
 (`useTimetableShown`), and is requested only while shown, so opening a busy stop costs nothing extra.
@@ -182,10 +193,16 @@ list lists buses long gone.
 Errors are JSON `{error}`. Our own `HttpError` messages go to the client as written. Any other error
 gets a generic message, and it keeps its status when Express gave it a 4xx (a `%FF` in a path is a
 400, not a 500). Only 5xx errors are logged: one line for an upstream failure, and a full stack trace
-only for our own bugs. In an outage every poll lands in that log. The SPA fallback answers `GET` and
+only for our own bugs. In an outage every poll lands in that log. Refusals by the upstream budget
+are the exception: `citybus.js` counts them and logs once a minute (decision 15). The SPA fallback answers `GET` and
 `HEAD`, and it passes over any path with a file extension. Those get a real 404: a page left open
 across a deploy asks for its old hashed bundle, and handing it `index.html` failed as a script, a
 blank screen.
+
+The city list is scraped from the citybus.gr landing page and kept a week. A failed scrape serves the
+last good list (kept a year for this), or the seed list on a cold start, and is tried again after 10
+minutes. It used to be cached like a good one: a server started during a citybus.gr blip showed
+Latin slugs as city names, in Latin order, for a week, across restarts.
 
 `agencyCode` in `/api/cities` is `null` until that city has actually been used. Resolving all 30
 eagerly would mean 30 extra page fetches for a field the UI does not need. `noData` is learned the
@@ -233,6 +250,14 @@ Three things keep it correct, all of which look redundant and are not:
   environments fire `visibilitychange` repeatedly without the state changing; reacting to each turns
   a 15s poll into a flood.
 - `MIN_REFRESH_GAP_MS` (3s) floors the interval between fetches however many resume events arrive.
+
+`inFlight` is only as good as the request under it. Observed: one request that never settled (what a
+phone gets on a dead cell handover or captive Wi-Fi) left `inFlight` set, and polling, Refresh and
+resume all stopped for good. `api.js` now gives every request a timeout: 12 s for live arrivals and
+timetables, 20 s for the stop list, 15 s otherwise. It rejects as `TimeoutError`, **never
+`AbortError`**, which every hook ignores as the sign of its own cleanup; a timeout dressed as one
+would hang exactly as before. Verified: a hung poll shows "not responding" at 12 s, and the next
+poll 15 s later recovers.
 
 Verified: pure polling is 2 requests per 33 seconds. Keep it that way.
 
@@ -311,6 +336,11 @@ a bus, or dragging the map. It expands again on a tap or an upward drag.
 - Tapping a bus collapses the sheet, so the peek then leads with a **Back** chip. Reported: there was
   no clear way back from a bus to the stop's list — only knowing that the header expands the sheet.
   Back clears the focused bus, expands the sheet and returns the map to the stop.
+- The peek never says more than it knows. With live data failing before any arrived it said "no
+  buses in the next 30 minutes", the answer that sends someone walking; it now gives the error.
+  Chips from an old answer (a failed poll, or none for 45 s) are dimmed behind a ⚠ and what is
+  wrong: the failure in a word, or the age. They used to count frozen minutes as if live. The note
+  sits in the same row, so the peek stays one line and `getBottomInset` is unaffected.
 
 ### 7. Moving buses and the map's render cost (`StopMap.jsx`)
 
@@ -431,11 +461,19 @@ fade rather than vanish so a tap, with its slack (decision 11), still reaches th
   closest to, looking only at stretches before the user's stop, since the stop lists the bus because
   it is coming. That also settles a circular route, whose terminus is behind the bus and ahead of it
   at once: ahead wins. A bus over 300 m from every stretch (leaving the depot, or a bad fix) gets no
-  progress. The same result gives "N stops away" in the peek chip and the followed row.
-  Only for buses with a GPS fix. Verified against live buses: counts matched the map. One bus reported
+  progress. The same result gives "N stops away" in the peek chip and the followed row: the stops
+  the bus still calls at **before** the user's, which is not counted ("your stop is next" at 0).
+  Reported: with one stop between the bus and the user, "2 stops away" read as wrong. The followed
+  bus's chip leads the peek, after Back; in its place by arrival time the count was cut off at the
+  edge. Only for buses with a GPS fix. Verified against live buses: counts matched the map. One bus reported
   3 minutes while standing at the airport terminus 24 stops away; the count shows the ETA was wrong.
 - The markers are memoised on the passed index, a number, so they restyle when the bus passes a stop,
   not on every poll.
+- A followed bus that leaves the list is let go by itself after **two** answers without it (the feed
+  drops a bus for a single answer now and then), with a message: "has passed this stop" if it was
+  last seen a minute out, "no longer listed" otherwise. Its route used to stay drawn, with nothing
+  saying it had gone. The focus is a layer, so its history entry is popped like any closed layer;
+  the map and the sheet stay put. Verified: history back from layer 2 to 1, route gone.
 - **Every stop style sets `opacity` explicitly.** Leaflet's `setStyle` merges into the old options, so a
   style without it would inherit the faded one's 0.25. Observed shape of the bug: stops staying faded
   after the bus is let go.
@@ -448,7 +486,8 @@ killed.
 - **A failed stop list retries.** It retries with backoff (5 s doubling to 60 s), and at once on
   `online` or on return to the app. A 404 is a city without data (`trikala`) and is not retried.
   While the list is missing, the home panel still shows favourites: a favourite carries its code and
-  name, which is all live arrivals need. The retry effect is keyed on the **error object**, a new
+  name, which is all live arrivals need. A retry keeps the failure, the button (reading "loading")
+  and the favourites on screen; it used to replace them with "Loading stops…" at every attempt. The retry effect is keyed on the **error object**, a new
   one per failure. Observed: keyed on a boolean, it stopped after one retry when the failure came
   back at once. React batched "loading" and "failed" into one render, so the boolean never changed.
 - **Refresh is one more poll, not a restart.** Observed: restarting the poll effect emptied the
@@ -462,8 +501,16 @@ killed.
   `MAX_AGE_MS`. Those are timed from **this device's clock** at receipt, not the server's
   `fetchedAt`: a phone whose clock runs fast would otherwise find every fresh list overdue and
   refetch in a loop.
+- **A failed timetable fetch keeps its list and retries.** Observed: one failure replaced the list
+  with the error, the only useful thing on screen while live data was failing too, and nothing
+  fetched it again after the network returned. `useSchedule` now keeps the data beside the error and
+  retries 15 s doubling to 2 min, and at once on `online` or on return. The error shows only when
+  there is no list.
 - **Live failing still offers the timetable.** Failed live arrivals count as 0 buses for the timetable's
   default, and the timetable shows under the error.
+- **"Updated … ago" is timed from receipt on this device** (`receivedAt`), in minutes past 60 s. From
+  the server's `fetchedAt` it said "120 s ago" right after a poll on a phone two minutes fast, and
+  "1834 s ago" after a stall.
 - Errors are worded for people: `errorMessage` in `i18n.js` says "offline" or "not responding"
   in the UI's language, never the raw English message.
 
@@ -485,6 +532,26 @@ killed.
   **global, not per client**, on purpose: behind the reverse proxy and mobile carrier NAT one address
   can be many people, and what it protects is the upstream, which is the same whoever asks. If real
   use ever meets it (it allows ~100 stops watched at once), raise the rate. Do not switch to per-IP.
+- **Made-up names cost nothing.** Measured with a stubbed upstream: a flood of made-up stop codes
+  (15/s, each a cache miss) spent the budget, and 7 of 8 real polls got 503. Now `index.js` refuses a
+  city not in the scraped list (`isKnownCity`), and `knownCodes` checks stop, line and route codes
+  against the city's Greek stop list before asking the upstream. An unknown stop answers what the
+  upstream would (`noService`, an empty timetable), an unknown route 404s. Verified: 200 made-up
+  codes, no upstream call. The cost is that a stop or route added upstream is unknown until the stop
+  list refreshes (24 h); checked, all 151 live buses at 20 stops in 5 cities had codes in the list.
+  A second budget reserved for keys that answered recently was considered and not built: with
+  made-up codes free, what is left is cycling real codes, and those become "known" after one answer.
+- **Refusals are logged once a minute, with a count**, not once per request. A line each brought back
+  the log flood the `%FF` fix closed (measured: ~105 lines in 30 s). The error carries `logged` so
+  `index.js` stays quiet.
+- **The budget runs on a monotonic clock** (`performance.now`). On `Date.now`, a wall clock stepped
+  back (an NTP correction) drove the budget negative and refused everything for as long as the step.
+  Found when a test faked the clock.
+- **Payloads are checked before they are cached** (`expectArray`). Measured with a stub answering 200
+  `{"message":"maintenance"}`: the object was cached as Heraklion's stop list for 24 h, on disk, so a
+  restart kept it, and every other endpoint 500ed with a stack trace per request. Now each is a 502,
+  cached for 5 s and never persisted. An empty stop list is refused too; a city without data is a
+  404, not `[]`.
 - A token refresh logs one line (`[citybus] <city>: token rejected, fetching a new one`). It is the
   path that otherwise shows itself only every 48 hours.
 
@@ -510,8 +577,11 @@ system share sheet where there is one (phones) and the clipboard otherwise.
   start. The query is then removed from the address bar. Left there, every reload would reopen the
   linked stop, and Android reloads an installed app whenever it restores one from the background.
 - Both values pass the server's own patterns (`validate.js`). Anything else is ignored.
-- The link's city is saved as if picked in settings: a stop shared from a city is almost always for
-  someone in it.
+- The link's city is shown at once and saved as if picked in settings once its stops load: a stop
+  shared from a city is almost always for someone in it. Saved at once, a misspelt link
+  (`city=irakleo`) replaced the user's city with one that does not exist. A link city whose stops
+  404 (unknown, or without data) is dropped with a message, and the saved city returns. Until it is
+  confirmed it lives in `linkCity`, and picking a city anywhere (`chooseCity`) clears it.
 - The linked stop starts with only its code, so live arrivals start at once. The name and position
   arrive with the stop list, and the map then pans to it. A code the city does not have closes the
   stop.
@@ -537,6 +607,11 @@ works only while the app runs.
   throws on `new Notification()`, which is kept for the development server, which has no worker.
   `public/sw-alerts.js`, pulled in by `workbox.importScripts`, focuses the app when the notification
   is tapped; without it, tapping did nothing.
+- Its outcome waits to be seen. Observed: fired in the background with notifications refused, the
+  alert left nothing on screen on return, since its message had timed out unseen. A message's time
+  on screen now starts only while the app is in view, and one produced while hidden starts with the
+  time it happened ("19:12 · …"): "3 minutes away" read ten minutes later is wrong without it. A
+  cancelled alert ("no longer listed") notifies too, when allowed.
 - Permission is asked on the first bell tap, the gesture the prompt needs. Denied, the alert still
   works in the app, and the confirmation says "while the app is open".
 - The alert stores a plain copy of the stop, without the `fromLink` mark. With the mark, a linked
@@ -556,6 +631,11 @@ little and never breaks a match.
   look (`panepisthmio`). A query therefore has two readings (`soundsOfQuery`) and matches if either
   does. The visual one also takes u for υ; both take 8 for θ.
 - Matches as typed come first; sound matches only fill the 25 results after them.
+- Then words, in any order, each allowed a different ending (`stemsOfQuery`): every query word must
+  start some word of the name, and one of 5 or more letters may differ in its last two. Names are
+  mostly genitive (ΑΓΙΟΥ ΝΙΚΟΛΑΟΥ, ΧΑΝΙΩΝ, ΚΟΥΝΟΥΠΙΔΙΑΝΩΝ) while people type the nominative, and
+  `agios nikolaos`, `hania` and `eleftherias plateia` found nothing. Last of three tiers, so it only
+  fills what the closer matches leave.
 - Digits are never collapsed: `1866` stays `1866`.
 - No lookbehind in the patterns: Safari before 16.4 fails to parse the whole bundle on one.
 
@@ -602,7 +682,7 @@ server/src/
   cache.js     TTL cache: single-flight, failure caching, size caps, optional disk persistence
 web/src/
   App.jsx      state orchestration; owns city/lang/stopTrail/focus/alert/panTarget/sheet mode
-  api.js       thin fetch wrappers over /api
+  api.js       fetch wrappers over /api, each with a timeout (decision 2)
   geo.js       distances, nearest stops and city, where a bus is along its route
   search.js    folding for search, and how a name sounds (Greeklish)
   link.js      shared stop links: reading one, making one
@@ -632,17 +712,20 @@ curl -s localhost:3000/api/irakleio/stops | python3 -c "import json,sys;print(le
 Expected results:
 
 - `/api/cities` → 30 · `/api/irakleio/stops` → 547 · `/api/chania/stops` → 483 · `/api/patra/stops` → 847
-- `/api/irakleio/stops?lang=en` → no stop with a null `name` (quirk 3)
+- `/api/irakleio/stops?lang=en` → no stop with a null `name` (quirk 3) · `/api/serres/stops?lang=en` →
+  398, as many as in Greek
 - `/api/irakleio/stops/0122/live` → live vehicles (`0122` is a busy central stop, good for testing)
-- `/api/irakleio/stops/9999/live` → `{"vehicles":[],"noService":true}`
-- `/api/irakleio/stops/0122/schedule` → 8 departures with `time` ≥ the current Athens time
+- `/api/irakleio/stops/9999/live` → `{"vehicles":[],"noService":true}`, answered from the stop list
+  without an upstream call · `/api/irakleo/stops/0122/live` (no such city) → 404, not `noService`
+- `/api/irakleio/stops/0122/schedule` → 8 departures with `time` ≥ the current Athens time, each
+  with `daysAhead`
 - `/api/irakleio/lines/06/routes/21009/shape` → 200, ~2.4 KB · an unknown route → 404
 - `/api/irakleio/routes/21009/sequence` → 45 codes, `9911` first · `/api/chania/routes/067/sequence` →
   starts and ends with `74005` · `/api/irakleio/routes/99999/sequence` → 404 ·
   `/api/irakleio/routes/..%2f1/sequence` → 400
 - after `/api/trikala/stops` (404), `/api/cities` marks `trikala` `noData: true`, and
   `/api/nosuchcity/stops` marks nothing
-- `/api/nosuchcity/stops` → 404, not 502; a second request is answered from cache in ~1 ms
+- `/api/nosuchcity/stops` → 404, not 502, without an upstream request (not in the city list)
 - `/api/evil.com/stops` → 400, `/api/irakleio/stops/..%2f..%2fetc/live` → 400 (same for `/schedule`),
   `/api/irakleio/lines/..%2f06/routes/1/shape` → 400
 - `/api/irakleio/stops/%FF/live` → 400 `{"error":"Bad request"}`, and nothing in the log
@@ -657,7 +740,21 @@ request live arrivals. It must return data — one refresh, one retry, no loop �
 
 Cache bounds, failure caching and the upstream budget are best checked against a stub, not the live
 API: import `TtlCache` in a scratch script, write 10 000 keys and confirm the size stays at
-`maxEntries`, and check that concurrent failing `wrap` calls share one producer call. For timetable
+`maxEntries`, and check that concurrent failing `wrap` calls share one producer call. With
+`globalThis.fetch` replaced before importing `citybus.js` and `CACHE_DIR` pointed at a scratch
+directory:
+- an upstream answering 200 `{"message":"maintenance"}` gives 502 from stops, lines, live, schedule,
+  shape and sequence, `static.json` stays empty, and the upstream is asked again after 5 s
+- with a stop list cached, 200 made-up stop codes make no upstream call
+- a stop with trips only on Monday, asked at Saturday 23:30 Athens (fake `Date.now`), lists Monday's
+  trips with `daysAhead` 2
+- a flood past the budget logs one `upstream budget spent` line
+- a landing page that fails serves the last good city list; on a cold start, the seed list, and the
+  scrape is not retried for 10 minutes
+
+Note that 60 *concurrent* requests for new cities are all refused, in 1.4.0 as well: their site
+fetches spend the whole burst, leaving nothing for the API calls after them. That is the bucket
+working, not a bug in a test. For timetable
 instants, `serviceInstant({year: 2026, month: 10, day: 25}, 7 * 60)` must be `2026-10-25T05:00:00Z`.
 
 Front end: `cd web && npm run build`, then load `localhost:3000` at phone size and confirm:
@@ -686,8 +783,11 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - `/?city=irakleio&stop=0122` with another city saved: the stop opens in Heraklion, the address bar
   shows `/`, and `history.state` is null. Open a stop from the map, then back: the linked stop returns.
   `stop=ZZZZ` closes to home once the stops load; `city=evil.com` is ignored
-- following a bus shows "N stops away" in its chip and fades the stops behind it; the counts add up
-  (passed + ahead + the selected stop = the route's length)
+- following a bus shows "N stops away" in its chip, first after Back, where N is the ringed stops
+  between the bus and the selected one, and fades the stops behind it; the counts add up (passed +
+  ahead + the selected stop = the route's length)
+- a stop's arrival rows are ~52 px tall (two lines each): 58 was reported as wasted space, 46 as
+  cramped
 - a bell sets an alert (a message confirms, the bell shows the minutes); with `/live` faked to bring
   that bus inside the lead, the next poll vibrates, notifies (through the service worker) and says
   so. Closed stop: an alert bar shows the minutes and reopens the stop. With `document.hidden` faked,
@@ -695,6 +795,22 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - `panepistimio` and `panepisthmio` find ΠΑΝΕΠΙΣΤΗΜΙΟ
 - a fake fix in Chania with Heraklion chosen: "Near me" gives the distance and offers Chania
 - settings greys out a city the server has found without data
+- a `fetch` wrapper that never settles `/live`: "not responding" within ~12 s, the next poll 15 s
+  later recovers. One that never settles `/stops` after switching to a city with a favourite: at 20 s
+  the error, the retry button and the favourite; the retry 5 s later keeps all three on screen
+- `/live` failing (`TypeError`) before any answer, sheet collapsed: the peek gives the error, not
+  "no buses". After an answer: dimmed chips behind "⚠ offline". Hidden for over a minute: "⚠ 1 min ago",
+  and "Updated 1 min ago" in the expanded footer
+- `/schedule` failing on a refetch: the list stays; it refetches 15 s later, or at once on `online`
+- an alert that fires with `document.hidden` faked: the message waits until visible, starts with the
+  time, then clears 10 s later
+- `/?city=irakleo&stop=0122` with Chania saved: Chania stays saved, and a message says the link's
+  city is not available
+- Share with `navigator.share` removed and the clipboard refused: a panel with the link selected;
+  Copy closes it once the clipboard works
+- a followed bus filtered out of two answers: let go with a message, history back one entry
+- `agios nikolaos` (Heraklion), `hania` and `kounoupidiana` (Chania), `eleftherias plateia` find
+  their stops; `panepistimio` still has ΠΑΝΕΠΙΣΤΗΜΙΟ ΚΡΗΤΗΣ in the top results
 
 Traps for automated browsers:
 - A page that is **not visible** gets no `requestAnimationFrame`, so `flyTo` stalls on its first

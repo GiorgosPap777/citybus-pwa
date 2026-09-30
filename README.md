@@ -16,16 +16,17 @@ configuration — the app discovers each one by itself.
 
 - **Map of every stop** in the city, tap one to open it.
 - **Live arrivals** — line, destination and minutes, refreshed every 15 seconds.
-- **Timetable** — the next scheduled departures, rolling into tomorrow's first buses late at night.
-  Shown on its own when no bus is due in the next 30 minutes, opened by itself at a quiet stop, and
-  one tap away at a busy one.
+- **Timetable** — the next scheduled departures, rolling into the following days once a stop's
+  service has ended (up to a week ahead: *tomorrow*, then weekdays). Shown on its own when no bus is
+  due in the next 30 minutes, opened by itself at a quiet stop, and one tap away at a busy one.
 - **Buses on the map**, coloured by line, gliding smoothly between updates.
 - **Tap a bus to follow it** — draws its route on the map, picks out the stops it still has to call
   at (the ones it has passed fade), counts how many stops away it is, and frames the bus together
   with your stop; **Back** returns to every bus due there.
 - **Tell me when it's close** — tap the bell beside a bus and the phone notifies you and vibrates when
   it is 2, 5 or 10 minutes away (your choice, in settings). Works while the app is open or in the
-  background; no account, no push server.
+  background; no account, no push server. With notifications off, the app says what happened, and
+  when, as soon as you come back to it.
 - **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
   of the next buses, and see the whole map.
 - **Back works like an app** — the phone's back gesture closes settings, stops following a bus, then
@@ -33,8 +34,12 @@ configuration — the app discovers each one by itself.
 - **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk. In
   another city it offers to switch to it.
 - **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ` — and reads
-  Greeklish: `panepistimio` and `panepisthmio` find it too.
+  Greeklish: `panepistimio` and `panepisthmio` find it too. Words match in any order and with any
+  ending, so `agios nikolaos` finds `ΑΓΙΟΥ ΝΙΚΟΛΑΟΥ`.
 - **Share a stop** — a link like `/?city=irakleio&stop=0122` opens the app on that stop.
+- **Honest when the network isn't** — requests give up after a few seconds instead of hanging, the
+  strip of buses says when its minutes are old or the connection is down, and everything retries
+  by itself when the network returns.
 - **Favourites** — save your home and work stops; they open first, no map needed.
 - **Greek and English**, including translated stop, line and city names.
 - **Installable** — add to your home screen and it runs like a native app.
@@ -185,6 +190,9 @@ can only ever reach a `citybus.gr` subdomain.
 
 A `404` from the upstream live endpoint means *either* an unknown stop *or* no buses due in the next
 30 minutes. The second is far more common, so it is surfaced as "no buses", not as an error.
+
+A city that is not on citybus.gr is a `404`, and stop, line and route codes that the city's stop list
+does not contain are answered without asking the upstream. Made-up names cost it nothing.
 
 ## Map tiles
 
