@@ -129,19 +129,15 @@ function Peek({ vehicles, hasData, error, receivedAt, loading, focusedVehicle, s
       hint
     );
   }
-  // The followed bus leads, after Back. Its chip carries the stop count, and in its
-  // place by arrival time it was cut off at the edge, or off screen altogether.
-  const shown = focusedVehicle
-    ? [
-        ...vehicles.filter((vehicle) => vehicle.vehicleCode === focusedVehicle),
-        ...vehicles.filter((vehicle) => vehicle.vehicleCode !== focusedVehicle),
-      ]
-    : vehicles;
+  // Always in arrival order, the followed bus included. Moving it to the front was
+  // tried (1.4.1) so its stop count could not be cut off at the edge, and was
+  // reported as confusing: with several buses of one line, the chips no longer
+  // read soonest first.
   return (
     <div className={`peek ${stale ? 'stale' : ''}`}>
       {back}
       {staleNote}
-      {shown.map((vehicle) => {
+      {vehicles.map((vehicle) => {
         const focused = vehicle.vehicleCode === focusedVehicle;
         return (
           <button

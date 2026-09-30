@@ -463,9 +463,10 @@ fade rather than vanish so a tap, with its slack (decision 11), still reaches th
   at once: ahead wins. A bus over 300 m from every stretch (leaving the depot, or a bad fix) gets no
   progress. The same result gives "N stops away" in the peek chip and the followed row: the stops
   the bus still calls at **before** the user's, which is not counted ("your stop is next" at 0).
-  Reported: with one stop between the bus and the user, "2 stops away" read as wrong. The followed
-  bus's chip leads the peek, after Back; in its place by arrival time the count was cut off at the
-  edge. Only for buses with a GPS fix. Verified against live buses: counts matched the map. One bus reported
+  Reported: with one stop between the bus and the user, "2 stops away" read as wrong. Peek chips
+  stay in arrival order. 1.4.1 moved the followed bus's chip to the front, since a later bus's count
+  can be cut off at the right edge; with several buses of one line that was reported as confusing,
+  and was undone. Only for buses with a GPS fix. Verified against live buses: counts matched the map. One bus reported
   3 minutes while standing at the airport terminus 24 stops away; the count shows the ETA was wrong.
 - The markers are memoised on the passed index, a number, so they restyle when the bus passes a stop,
   not on every poll.
@@ -783,7 +784,7 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - `/?city=irakleio&stop=0122` with another city saved: the stop opens in Heraklion, the address bar
   shows `/`, and `history.state` is null. Open a stop from the map, then back: the linked stop returns.
   `stop=ZZZZ` closes to home once the stops load; `city=evil.com` is ignored
-- following a bus shows "N stops away" in its chip, first after Back, where N is the ringed stops
+- following a bus shows "N stops away" in its chip, in its place by arrival time, where N is the ringed stops
   between the bus and the selected one, and fades the stops behind it; the counts add up (passed +
   ahead + the selected stop = the route's length)
 - a stop's arrival rows are ~52 px tall (two lines each): 58 was reported as wasted space, 46 as
