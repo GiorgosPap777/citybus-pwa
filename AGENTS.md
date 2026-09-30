@@ -591,8 +591,8 @@ building, so deploying is a pull, not a build on the target host.
 To cut a release:
 
 ```bash
-docker build -t giorgospap777/citybus-pwa:1.2.1 -t giorgospap777/citybus-pwa:latest .
-docker push giorgospap777/citybus-pwa:1.2.1
+docker build -t giorgospap777/citybus-pwa:1.3.0 -t giorgospap777/citybus-pwa:latest .
+docker push giorgospap777/citybus-pwa:1.3.0
 docker push giorgospap777/citybus-pwa:latest
 ```
 
@@ -602,7 +602,7 @@ Before pushing, run the image and check it end to end — the build succeeding p
 on its own:
 
 ```bash
-docker run -d --name citybus-test -p 3200:3000 giorgospap777/citybus-pwa:1.2.1
+docker run -d --name citybus-test -p 3200:3000 giorgospap777/citybus-pwa:1.3.0
 curl -s localhost:3200/api/health                          # {"ok":true}
 curl -s localhost:3200/api/irakleio/stops/0122/live        # real vehicles
 curl -sI localhost:3200/api/irakleio/stops/0122/live | grep -i cache-control   # must be no-store
