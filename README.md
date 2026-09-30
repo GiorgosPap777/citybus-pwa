@@ -20,12 +20,12 @@ configuration — the app discovers each one by itself.
   Shown on its own when no bus is due in the next 30 minutes, opened by itself at a quiet stop, and
   one tap away at a busy one.
 - **Buses on the map**, coloured by line, gliding smoothly between updates.
-- **Tap a bus to follow it** — draws its route on the map and frames the bus together with your stop;
-  **Back** returns to every bus due there.
+- **Tap a bus to follow it** — draws its route on the map, picks out the stops it calls at, and frames
+  the bus together with your stop; **Back** returns to every bus due there.
 - **A panel that gets out of the way** — drag it down (or just move the map) to shrink it to a strip
   of the next buses, and see the whole map.
 - **Back works like an app** — the phone's back gesture closes settings, stops following a bus, then
-  closes the stop, and only then leaves the app.
+  steps back through the stops you opened, and only then leaves the app.
 - **Near me** — sorts stops by distance using your phone's GPS, and keeps updating as you walk.
 - **Stop search** that ignores accents and case — `Πανεπιστήμιο` finds `ΠΑΝΕΠΙΣΤΗΜΙΟ`.
 - **Favourites** — save your home and work stops; they open first, no map needed.
@@ -90,7 +90,8 @@ proxy that also:
 
 - scrapes each city's bearer token and agency code from that city's own page,
 - refreshes the token automatically when it expires — they last 48 hours,
-- caches stops and lines for 24 hours, and live arrivals for 10 seconds.
+- caches stops and lines for 24 hours, and live arrivals for 10 seconds,
+- caps its own request rate to citybus.gr, however many people use it.
 
 That last one matters. The 10-second cache means twenty people watching the same stop produce one
 upstream request per 10 seconds instead of twenty. If you fork this, please keep it.

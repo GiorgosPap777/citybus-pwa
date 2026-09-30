@@ -15,13 +15,15 @@ export default function SettingsSheet({
 }) {
   // The server lists cities by slug, which is no order at all once the names are
   // shown in Greek (Αγρινίου, Αλεξανδρούπολης, Άρτας, Χαλκίδος, …).
-  const options = useMemo(
-    () =>
-      cities
-        .map((c) => ({ slug: c.slug, label: cityName(c, lang) }))
-        .sort((a, b) => a.label.localeCompare(b.label, lang)),
-    [cities, lang],
-  );
+  // The current city is listed even when the scraped list lacks it (a city dropped
+  // upstream, or the list not loaded yet). A <select> whose value matches no option
+  // shows the first one as chosen, and choosing that then fires no change at all.
+  const options = useMemo(() => {
+    const list = cities.some((c) => c.slug === city) ? cities : [...cities, { slug: city }];
+    return list
+      .map((c) => ({ slug: c.slug, label: cityName(c, lang) }))
+      .sort((a, b) => a.label.localeCompare(b.label, lang));
+  }, [cities, city, lang]);
 
   return (
     <>

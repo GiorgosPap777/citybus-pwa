@@ -16,16 +16,30 @@ import { useFavourites } from './hooks/useFavourites.js';
 import { usePersistentState } from './hooks/usePersistentState.js';
 import { useSheetCollapse, useSheetDrag } from './hooks/useSheetDrag.js';
 import { useBackButton } from './hooks/useBackButton.js';
-import { cityName, translator } from './i18n.js';
+import { cityName, errorMessage, LANGS, translator } from './i18n.js';
+
+// Saved settings are read again on every launch, so a bad value would break every
+// launch; anything unrecognised means "not chosen" instead. Observed: a saved city
+// of 123 crashed the city name, and the error screen's reload crashed again.
+// The slug rule is the server's own (assertSlug).
+const asCity = (value) => (typeof value === 'string' && /^[a-z0-9-]{1,40}$/.test(value) ? value : null);
+const asLang = (value) => (LANGS.includes(value) ? value : null);
+
+// Stops opened one from another, so back can return through them. Older ones are
+// dropped past this: back is also how an installed app is left, and a dozen
+// presses to get out is worse than losing a stop from five ago.
+const MAX_STOP_TRAIL = 5;
 
 export default function App() {
   // null means "not chosen yet" — the server's configured default fills in.
-  const [savedCity, setSavedCity] = usePersistentState('citybus.city.v1', null);
-  const [savedLang, setSavedLang] = usePersistentState('citybus.lang.v1', null);
+  const [savedCity, setSavedCity] = usePersistentState('citybus.city.v1', null, asCity);
+  const [savedLang, setSavedLang] = usePersistentState('citybus.lang.v1', null, asLang);
 
   const [config, setConfig] = useState(null);
   const [cities, setCities] = useState([]);
-  const [selectedStop, setSelectedStop] = useState(null);
+  // The last stop is the open one.
+  const [stopTrail, setStopTrail] = useState([]);
+  const selectedStop = stopTrail.at(-1) ?? null;
   const [panTarget, setPanTarget] = useState(null);
   const [sheet, setSheet] = useState('home'); // 'home' | 'stop' | 'settings'
   // The bus whose route is drawn: { vehicleCode, lineCode, routeCode, color }.
@@ -50,7 +64,7 @@ export default function App() {
     document.documentElement.lang = lang;
   }, [lang]);
 
-  const { stops, loading: stopsLoading, error: stopsError } = useStops(city, lang);
+  const { stops, loading: stopsLoading, error: stopsError, retry: retryStops } = useStops(city, lang);
   const favourites = useFavourites();
   const geo = useGeolocation();
 
@@ -64,12 +78,19 @@ export default function App() {
 
   // Live data only reaches 30 minutes ahead, so the timetable answers what it
   // cannot: always when no bus is due, and on request (or at a quiet stop) otherwise.
+  // Live data that failed before any arrived counts as no buses: the timetable may
+  // still load, and it is then the only answer on screen.
   const [timetableShown, toggleTimetable] = useTimetableShown(
     selectedStop ? `${city}:${selectedStop.code}` : null,
-    arrivals ? arrivals.vehicles.length : null,
+    arrivals ? arrivals.vehicles.length : arrivalsError ? 0 : null,
   );
   const schedule = useSchedule(city, lang, selectedStop?.code, timetableShown);
   const routePoints = useRouteShape(city, focus?.lineCode, focus?.routeCode);
+
+  const refreshStop = useCallback(() => {
+    refresh();
+    schedule.refresh();
+  }, [refresh, schedule.refresh]);
 
   const openSheet = useCallback(
     (name) => {
@@ -83,35 +104,63 @@ export default function App() {
 
   // A stop from one city is meaningless in another.
   useEffect(() => {
-    setSelectedStop(null);
+    setStopTrail([]);
     setFocus(null);
     openSheet('home');
   }, [city, openSheet]);
 
-  // Keep the selected stop's details in sync when the language switches.
+  // Keep the open stop's details in sync when the language switches. Older stops
+  // in the trail catch up when back returns to them.
   useEffect(() => {
     if (!selectedStop) return;
     const fresh = stops.find((s) => s.code === selectedStop.code);
-    if (fresh && fresh.name !== selectedStop.name) setSelectedStop(fresh);
+    if (fresh && fresh.name !== selectedStop.name) {
+      setStopTrail((trail) => [...trail.slice(0, -1), fresh]);
+    }
   }, [stops, selectedStop]);
 
+  const panToStop = useCallback((stop) => {
+    if (Number.isFinite(stop?.latitude) && Number.isFinite(stop?.longitude)) {
+      setPanTarget({ lat: stop.latitude, lon: stop.longitude, at: Date.now() });
+    }
+  }, []);
+
+  // A stop opened from another one stacks on it (reported: back from a stop picked
+  // on the map went home, not to the stop before). One already in the trail moves
+  // to the top rather than appearing twice.
   const selectStop = useCallback(
     (stop) => {
-      setSelectedStop(stop);
+      setStopTrail((trail) =>
+        [...trail.filter((s) => s.code !== stop.code), stop].slice(-MAX_STOP_TRAIL),
+      );
       setFocus(null);
       openSheet('stop');
-      if (Number.isFinite(stop.latitude) && Number.isFinite(stop.longitude)) {
-        setPanTarget({ lat: stop.latitude, lon: stop.longitude, at: Date.now() });
-      }
+      panToStop(stop);
     },
-    [openSheet],
+    [openSheet, panToStop],
   );
 
+  // The close button leaves every stop, not just the top one.
   const closeStop = useCallback(() => {
-    setSelectedStop(null);
+    setStopTrail([]);
     setFocus(null);
     openSheet('home');
   }, [openSheet]);
+
+  // Back from a stop: the one before it, or home when there is none.
+  const returnToStops = useCallback(
+    (count) => {
+      if (count <= 0) {
+        closeStop();
+        return;
+      }
+      setStopTrail((trail) => trail.slice(0, count));
+      setFocus(null);
+      openSheet('stop');
+      panToStop(stopTrail[count - 1]);
+    },
+    [closeStop, openSheet, panToStop, stopTrail],
+  );
 
   // Show one bus: draw its route, get the sheet out of the way, and frame the bus
   // together with the stop, so the user sees how far away it actually is.
@@ -143,8 +192,9 @@ export default function App() {
     }
   }, [selectedStop, setCollapsed]);
 
-  // What the back button closes, topmost first, before it is allowed to leave the app.
-  const layers = (selectedStop ? 1 : 0) + (focus ? 1 : 0) + (sheet === 'settings' ? 1 : 0);
+  // What the back button closes, topmost first, before it is allowed to leave the
+  // app: settings, a followed bus, then each stop in the trail.
+  const layers = stopTrail.length + (focus ? 1 : 0) + (sheet === 'settings' ? 1 : 0);
   const closeLayersTo = useCallback(
     (keep) => {
       let open = layers;
@@ -156,9 +206,9 @@ export default function App() {
         unfocusVehicle();
         open -= 1;
       }
-      if (open > keep && selectedStop) closeStop();
+      if (open > keep && stopTrail.length) returnToStops(stopTrail.length - (open - keep));
     },
-    [layers, sheet, selectedStop, focus, openSheet, unfocusVehicle, closeStop],
+    [layers, sheet, selectedStop, focus, stopTrail, openSheet, unfocusVehicle, returnToStops],
   );
   useBackButton(layers, closeLayersTo);
 
@@ -217,6 +267,7 @@ export default function App() {
         focusedVehicle={focus?.vehicleCode}
         onSelectVehicle={focusVehicle}
         routePoints={routePoints}
+        routeCode={focus?.routeCode}
         routeColor={focus?.color}
         userPosition={geo.position}
         panTarget={panTarget}
@@ -264,7 +315,6 @@ export default function App() {
         ref={sheetRef}
         className={`sheet ${collapsed ? 'collapsed' : ''}`}
         data-mode={sheet}
-        aria-live="polite"
       >
         <button
           type="button"
@@ -302,7 +352,7 @@ export default function App() {
             loading={arrivalsLoading}
             error={arrivalsError}
             refreshing={refreshing}
-            onRefresh={refresh}
+            onRefresh={refreshStop}
             onClose={closeStop}
             isFavourite={isFavourite}
             onToggleFavourite={() => favourites.toggle(city, selectedStop)}
@@ -319,14 +369,25 @@ export default function App() {
           <>
             {stopsLoading && <p className="state">{t('loadingStops')}</p>}
             {stopsError && (
-              <p className="state error">
-                {/* A few citybus.gr cities have a site but no data in the API. */}
-                {stopsError.status === 404 ? t('cityUnavailable') : stopsError.message || t('error')}
-              </p>
+              <div className="state error" role="status">
+                {/* A few citybus.gr cities have a site but no data in the API. That
+                    will not change on a retry; anything else might. */}
+                {stopsError.status === 404 ? (
+                  <p>{t('cityUnavailable')}</p>
+                ) : (
+                  <>
+                    <p>{errorMessage(stopsError, t)}</p>
+                    <button type="button" className="btn" onClick={retryStops}>
+                      {t('retry')}
+                    </button>
+                  </>
+                )}
+              </div>
             )}
-            {!stopsLoading && !stopsError && (
+            {!stopsLoading && (
               <HomePanel
                 stops={stops}
+                stopsUnavailable={!!stopsError}
                 favourites={favourites.forCity(city)}
                 onSelectStop={selectStop}
                 geo={geo}

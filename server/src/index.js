@@ -89,7 +89,14 @@ if (fs.existsSync(WEB_DIST)) {
     }),
   );
   app.use((req, res, next) => {
-    if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
+    // HEAD as well as GET: uptime monitors and link previews use it, and were told
+    // 404 for a page that GET serves.
+    if ((req.method !== 'GET' && req.method !== 'HEAD') || req.path.startsWith('/api/')) return next();
+    // A path with an extension is a file, never a client-side route. A page left
+    // open across a deploy asks for its old hashed bundle, and answering that with
+    // index.html (200) failed as a script that is HTML — a blank screen instead of
+    // a plain 404.
+    if (path.extname(req.path)) return next();
     res.sendFile(path.join(WEB_DIST, 'index.html'));
   });
 } else {
@@ -98,10 +105,22 @@ if (fs.existsSync(WEB_DIST)) {
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
-app.use((err, _req, res, _next) => {
-  const status = err instanceof HttpError ? err.status : 500;
-  if (status >= 500) console.error('[server]', err);
-  res.status(status).json({ error: err.message || 'Internal error' });
+app.use((err, req, res, _next) => {
+  // Express's own errors carry a status too: a path parameter that is not valid
+  // UTF-8 once decoded (%FF) is a 400. Treated as 500, each one also logged a full
+  // stack trace, so anyone could flood the log.
+  const clientError = err.status >= 400 && err.status < 500;
+  const status = err instanceof HttpError ? err.status : clientError ? err.status : 500;
+  // Upstream trouble gets one line: its message already says what failed, and in
+  // an outage every poll lands here. Stack traces are kept for our own bugs.
+  if (status >= 500 && err instanceof HttpError) {
+    console.error(`[server] ${status} ${req.method} ${req.path}: ${err.message}`);
+  } else if (status >= 500) {
+    console.error('[server]', err);
+  }
+  // Only our own messages are written for clients.
+  const message = err instanceof HttpError ? err.message : clientError ? 'Bad request' : 'Internal error';
+  res.status(status).json({ error: message });
 });
 
 app.listen(PORT, () => {

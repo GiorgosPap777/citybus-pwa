@@ -169,12 +169,20 @@ downloaded once a week per device, not once per tap.
 
 `/schedule` returns the next 8 timetabled departures from now, rolling into tomorrow when today runs
 out. Each has `time` (`"HH:MM"`), `departsAt` (epoch ms, so the client can drop departures as they
-pass without refetching), `tomorrow`, and the line fields. It answers "when is the next bus?" where
+pass without refetching; see decision 16 for how it is computed), `tomorrow`, and the line fields. It answers "when is the next bus?" where
 live data (30 minutes ahead) cannot, so it is **always shown when live arrivals are empty**. Beside live
 buses it sits behind a one-line toggle, open by default at a stop with 3 or fewer live buses
 (`useTimetableShown`), and is requested only while shown, so opening a busy stop costs nothing extra.
 Like `/live` it is `no-store`, and the service worker treats it as `NetworkOnly`: a cached "next departures"
 list lists buses long gone.
+
+Errors are JSON `{error}`. Our own `HttpError` messages go to the client as written. Any other error
+gets a generic message, and it keeps its status when Express gave it a 4xx (a `%FF` in a path is a
+400, not a 500). Only 5xx errors are logged: one line for an upstream failure, and a full stack trace
+only for our own bugs. In an outage every poll lands in that log. The SPA fallback answers `GET` and
+`HEAD`, and it passes over any path with a file extension. Those get a real 404: a page left open
+across a deploy asks for its old hashed bundle, and handing it `index.html` failed as a script, a
+blank screen.
 
 `agencyCode` in `/api/cities` is `null` until that city has actually been used. Resolving all 30
 eagerly would mean 30 extra page fetches for a field the UI does not need.
@@ -200,8 +208,8 @@ around a city this is the difference between neighbourly and abusive. The `TtlCa
 flight path matters for the same reason: concurrent misses on one key share a single upstream call
 rather than stampeding.
 
-The live cache is deliberately **memory-only** (`new TtlCache({ name: 'live' })`, no `dir`) — the
-static caches persist to disk, but writing a file every 10 seconds would be silly.
+The live cache is deliberately **memory-only** (no `dir`) — the static caches persist to disk, but
+writing a file every 10 seconds would be silly. Failures collapse the same way; see decision 15.
 
 ### 2. Poll scheduling in `web/src/hooks/useLiveArrivals.js`
 
@@ -295,9 +303,9 @@ a bus, or dragging the map. It expands again on a tap or an upward drag.
   later ones itself over `GLIDE_MS`. react-leaflet calls `setLatLng` whenever `position` changes
   identity, which cuts every glide short. Jumps over `MAX_GLIDE_M` (a new trip or a GPS glitch) and
   `prefers-reduced-motion` skip the animation.
-- Stop markers are memoised on `[stops, selectedCode, onSelectStop]`. Otherwise each 15s poll handed
-  all ~550 `CircleMarker`s a new `pathOptions` object, and react-leaflet restyled every one — a full
-  canvas redraw per poll. `onSelectStop` must stay a stable callback for this to hold.
+- Stop markers are memoised on `[stops, selectedCode, onSelectStop, routeCode, routeColor]`. Otherwise
+  each 15s poll handed all ~550 `CircleMarker`s a new `pathOptions` object, and react-leaflet
+  restyled every one — a full canvas redraw per poll. `onSelectStop` must stay a stable callback for this to hold.
 - The route line and the GPS accuracy circle live in a pane at z-index 390, just below the stops
   (400), so the line never hides a tappable stop.
 
@@ -316,6 +324,11 @@ button, in the saved language. A reload cannot escape a crash caused by **saved 
 data is read again on every launch. So `useFavourites` sanitises what it reads (non-arrays, entries
 without string `city`/`code`, non-string names). Verified by planting a malformed entry: before the
 fix the app crash-looped, after it the app loads. Apply the same rule to any new persisted state.
+
+`usePersistentState` takes a sanitiser for this, applied on read. The saved city and language pass
+`asCity` (the server's slug rule) and `asLang`, and anything else reads as "not chosen", so the
+server's default applies. Observed: a saved city of `123` crashed rendering the city's name, and the
+error screen's reload crashed again.
 
 ### 10. Map tiles are fetched with CORS (`crossOrigin` on `TileLayer`, `osm-tiles-v2`)
 
@@ -374,6 +387,88 @@ at a time and leaves the app only from the home panel.
   the base entry at load. Relabelling the stale entry instead was tried: the first back after a
   reload then did nothing visible. The rewind runs at module level, once per load. In an effect,
   StrictMode would run it twice in development, and the second rewind would leave the app.
+- Stops stack. Reported: a stop opened from the map while another was open replaced it, so back went
+  home instead of to the stop before. `App.jsx` keeps a `stopTrail` (the open stop is its last entry),
+  one layer per stop, capped at `MAX_STOP_TRAIL` (5). Back is also how an installed app is left, and
+  a dozen presses to get out is worse than losing a stop from five ago. A stop already in the trail
+  moves to the top rather than appearing twice. ✕ leaves every stop at once. Opening a stop while
+  following a bus replaces the bus layer, so the depth, and the history, stay the same.
+
+### 13. The followed bus's stops (`routeCode` in `StopMap.jsx`)
+
+Asked for: while a bus is followed, show only the stops it will call at. Those stops are drawn as
+rings in the line's colour, and every other stop fades to near-invisible (`OFF_ROUTE_STOP`). They
+fade rather than vanish so a tap, with its slack (decision 11), still reaches them.
+
+- Membership comes from `routeCodes[]`, which `/stops` already carries, so this costs no request.
+  Checked against the drawn paths of five Heraklion routes: every stop listed for a route lay within
+  ~20 m of it (median ~5 m).
+- **Every stop style sets `opacity` explicitly.** Leaflet's `setStyle` merges into the old options, so a
+  style without it would inherit the faded one's 0.25. Observed shape of the bug: stops staying faded
+  after the bus is let go.
+- Not done: fading the stops the bus has **already passed**. That needs `/routes/{route}/sequence`
+  (see *Open items*).
+
+### 14. Recovering without a reload (`useStops`, `useLiveArrivals`, `useSchedule`)
+
+An installed app has no reload button, so each of these used to be a dead end until the app was
+killed.
+
+- **A failed stop list retries.** It retries with backoff (5 s doubling to 60 s), and at once on
+  `online` or on return to the app. A 404 is a city without data (`trikala`) and is not retried.
+  While the list is missing, the home panel still shows favourites: a favourite carries its code and
+  name, which is all live arrivals need. The retry effect is keyed on the **error object**, a new
+  one per failure. Observed: keyed on a boolean, it stopped after one retry when the failure came
+  back at once. React batched "loading" and "failed" into one render, so the boolean never changed.
+- **Refresh is one more poll, not a restart.** Observed: restarting the poll effect emptied the
+  list, brought back the spinner and shrank the sheet by 330px before it regrew. With the network
+  down, it replaced good arrivals with an error. `refresh()` now calls `cycle()` through a ref and
+  obeys `MIN_REFRESH_GAP_MS` like a resume does. It refreshes the timetable too.
+- **The timetable refetches as it runs down.** Eight departures from a busy stop cover ~20 minutes.
+  Fetched once, the list emptied while the stop stayed open, and it then read as "no more
+  departures". `useSchedule` refetches once only `REFILL_AT` (3) departures are left to come, or on
+  return to the app once that point has passed. It waits at least `MIN_REFETCH_MS` and at most
+  `MAX_AGE_MS`. Those are timed from **this device's clock** at receipt, not the server's
+  `fetchedAt`: a phone whose clock runs fast would otherwise find every fresh list overdue and
+  refetch in a loop.
+- **Live failing still offers the timetable.** Failed live arrivals count as 0 buses for the timetable's
+  default, and the timetable shows under the error.
+- Errors are worded for people: `errorMessage` in `i18n.js` says "offline" or "not responding"
+  in the UI's language, never the raw English message.
+
+### 15. Server caches are bounded, failures are cached, upstream calls are budgeted
+
+- **Bounded.** `TtlCache` sweeps expired entries every minute and caps entries per cache (`maxEntries`,
+  oldest write evicted). Before, an entry was dropped only when its own key was read again. Stop codes
+  are user input, so a caller cycling codes grew the heap without limit. `docker-compose.yml` sets
+  `mem_limit: 256m` as a backstop.
+- **Failures are cached** (`failureTtl` in `citybus.js`): a 404 for 10 minutes, anything else for 5
+  seconds. Measured before: an unknown city was fetched from `{slug}.citybus.gr` on every request, and
+  in an upstream outage every poll from every user went upstream. The single-flight of decision 1 failed
+  exactly when it mattered. Failures stay in memory and are never persisted. `delete()` clears them,
+  which the token refresh relies on.
+- **Upstream budget.** A token bucket in `citybus.js` (`UPSTREAM_PER_SECOND` 10, `UPSTREAM_BURST` 50)
+  covers every call to citybus.gr, the post-refresh retry included. When it is empty, the request gets
+  a 503. Normal use stays far below it because of the caches. It exists so that nobody can use the
+  proxy to hammer the upstream, since it is this server's address that would be blocked. It is
+  **global, not per client**, on purpose: behind the reverse proxy and mobile carrier NAT one address
+  can be many people, and what it protects is the upstream, which is the same whoever asks. If real
+  use ever meets it (it allows ~100 stops watched at once), raise the rate. Do not switch to per-IP.
+- A token refresh logs one line (`[citybus] <city>: token rejected, fetching a new one`). It is the
+  path that otherwise shows itself only every 48 hours.
+
+### 16. Timetable instants are computed per date (`serviceClock`, `serviceInstant`, `citybus.js`)
+
+Trip times are Greek wall-clock times. `departsAt` used to be "now plus the minutes until the trip".
+That assumes every day has 24 hours. On the Saturday before summer time ends (Sun 25 Oct 2026, 04:00 →
+03:00), Sunday's departures came out an hour early, and the client dropped each one an hour before it
+left. `serviceInstant(date, minute)` now finds the UTC instant of that wall-clock time on that date,
+using the offset in force then. Verified: Sat 24 Oct 21:00 → Sun 07:00 is `2026-10-25T05:00Z`.
+
+`serviceClock` reads **numeric** date parts in `Europe/Athens` and derives the weekday with
+`Date.UTC(...).getUTCDay()`. It used to match `en-GB` weekday names. Locales have changed
+abbreviations before ("Sep" → "Sept"), and a mismatch gave day `-1` and a failing `/schedule`
+everywhere.
 
 ---
 
@@ -399,19 +494,23 @@ at a time and leaves the app only from the home panel.
 ```
 server/src/
   index.js     routes, static hosting, error middleware
-  citybus.js   ALL upstream contact: token + agency discovery, validation, normalisation
+  citybus.js   ALL upstream contact: token + agency discovery, validation, normalisation,
+               the upstream budget, Greek service time
   cities.js    scrapes the citybus.gr landing page for the city list (seed list as fallback)
-  cache.js     TTL cache: single-flight, optional disk persistence
+  cache.js     TTL cache: single-flight, failure caching, size caps, optional disk persistence
 web/src/
-  App.jsx      state orchestration; owns city/lang/selectedStop/panTarget/sheet mode
+  App.jsx      state orchestration; owns city/lang/stopTrail/focus/panTarget/sheet mode
   api.js       thin fetch wrappers over /api
   geo.js       haversine distance, nearest-stops sort, distance formatting
-  i18n.js      el/en strings, English city names
+  i18n.js      el/en strings, English city names, errorMessage
   storage.js   localStorage guarded against private-mode throws
   main.jsx     mounts App inside ErrorBoundary
   components/  StopMap · StopSheet · HomePanel · SettingsSheet · ErrorBoundary · Icon (inline SVGs)
   hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useGeolocation
                useSheetDrag · useFavourites · usePersistentState · useBackButton
+web/icon-maskable.svg   source of public/icon-maskable-512.png: full-bleed, bus inside the central
+                        80% safe zone. Kept out of public/ so it is not precached. Re-render with
+                        rsvg-convert -w 512 -h 512 icon-maskable.svg -o public/icon-maskable-512.png
 ```
 
 ## Verifying changes
@@ -430,15 +529,23 @@ Expected results:
 - `/api/irakleio/stops/9999/live` → `{"vehicles":[],"noService":true}`
 - `/api/irakleio/stops/0122/schedule` → 8 departures with `time` ≥ the current Athens time
 - `/api/irakleio/lines/06/routes/21009/shape` → 200, ~2.4 KB · an unknown route → 404
-- `/api/nosuchcity/stops` → 404, not 502
+- `/api/nosuchcity/stops` → 404, not 502; a second request is answered from cache in ~1 ms
 - `/api/evil.com/stops` → 400, `/api/irakleio/stops/..%2f..%2fetc/live` → 400 (same for `/schedule`),
   `/api/irakleio/lines/..%2f06/routes/1/shape` → 400
+- `/api/irakleio/stops/%FF/live` → 400 `{"error":"Bad request"}`, and nothing in the log
+- `/assets/index-doesnotexist.js` → 404 · `curl -I /some/route` → 200, like `GET`
 - **Any-city check:** request a city never used before; it must work with no code change. That is the
   auto-discovery guarantee and it is easy to break.
 
 Token refresh (the path that otherwise only fails in 48 hours): stop the server, corrupt the
 signature of a token in `server/.cache/sites.json` while leaving its `exp` intact, restart, and
-request live arrivals. It must return data — one refresh, one retry, no loop.
+request live arrivals. It must return data — one refresh, one retry, no loop — and log one
+`token rejected` line.
+
+Cache bounds, failure caching and the upstream budget are best checked against a stub, not the live
+API: import `TtlCache` in a scratch script, write 10 000 keys and confirm the size stays at
+`maxEntries`, and check that concurrent failing `wrap` calls share one producer call. For timetable
+instants, `serviceInstant({year: 2026, month: 10, day: 25}, 7 * 60)` must be `2026-10-25T05:00:00Z`.
 
 Front end: `cd web && npm run build`, then load `localhost:3000` at phone size and confirm:
 - the map frames the city
@@ -455,6 +562,14 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - back steps out one layer at a time (settings, then a followed bus, then the stop) and then leaves;
   after closing a layer with ✕ or the Back chip, the next back still does something
 - after a reload with a stop open, a single back leaves the app
+- open a stop, tap another on the map, press back: the first stop returns, then home
+- following a bus rings its route's stops in the line colour and fades the rest; back restores them all
+- Refresh keeps the list on screen (no spinner, no shrinking sheet)
+- a saved city of `123` in `localStorage` loads the default city instead of the error screen
+- with `/stops` failing (override `fetch` and switch city), the home panel shows a translated error, a
+  retry button and the favourites, retries after 5 s then 10 s, and recovers
+- with `/live` failing, a stop shows the translated error and the timetable below it
+- at 1280 px wide the sheet is 480 px and centred
 
 Traps for automated browsers:
 - A page that is **not visible** gets no `requestAnimationFrame`, so `flyTo` stalls on its first
@@ -508,12 +623,20 @@ The image is `linux/amd64` only. If it ever needs to run on ARM, build with
 - **Timetables show the next 8 departures only** (`/schedule`): alone when no bus is live, behind a
   toggle otherwise. A full day view is a small step from `getDayTimetable`.
 - **The back button is verified in desktop Chromium only**, using the browser's own back, not yet
-  with the gesture in an installed app on a phone. Back never returns to a previous stop: opening a
-  second stop replaces the first rather than stacking. Forward, on desktop, reopens nothing.
+  with the gesture in an installed app on a phone. Back returns through up to 5 stops (decision 12).
+  Forward, on desktop, reopens nothing.
 - **Route lines are built for the tapped bus only.** Showing every route through a stop, or a line
   browser, is additive — `/shape` and `/lines` already exist.
 - **Not built, endpoint confirmed working:** `/routes/{route}/sequence` (a route's ordered stops),
-  which would let a tapped bus show the stops it has left before this one.
+  which would let a tapped bus fade the stops it has already passed (decision 13) or show "3 stops
+  away".
+- **Unchecked: trips just after midnight.** Day timetables list trips at 00:00–01:02, which the
+  server treats as the early morning of that calendar day. If the operator means the end of the
+  previous service day, `/schedule` shows the wrong set around midnight. Compare `/schedule` with live
+  arrivals and the operator's own site at ~23:45 on a weekday before changing anything.
+- **No per-client rate limit, by design** — see decision 15 for the global upstream budget instead.
+- **Wide screens** keep the bottom sheet, capped at 480 px and centred. Docking it to the side would
+  need the map insets (decision 5) to become side insets.
 - **HTTPS is required in production**, not cosmetic: PWA install and geolocation both need a secure
   context. `localhost` is exempt, so development needs nothing.
 - **OSM tile policy:** the public tile servers ask that heavy apps not use them. `TILE_URL` is a

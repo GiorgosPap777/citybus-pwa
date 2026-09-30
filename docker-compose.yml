@@ -6,6 +6,9 @@ services:
     image: giorgospap777/citybus-pwa:latest
     container_name: citybus
     restart: unless-stopped
+    # A backstop only: the caches are capped, and the app uses ~40 MB. If memory
+    # ever runs away anyway, the container restarts instead of starving the host.
+    mem_limit: 256m
 
     environment:
       PORT: 3000

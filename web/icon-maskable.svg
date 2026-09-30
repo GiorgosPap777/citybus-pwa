@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Full bleed: the launcher applies its own mask (circle, squircle, square).
+       The bus is shrunk to stay inside the central 80% safe zone.
+       Source for public/icon-maskable-512.png, kept out of public/ so it is not
+       served: rsvg-convert -w 512 -h 512 icon-maskable.svg -o public/icon-maskable-512.png -->
+  <rect width="100" height="100" fill="#142A5A"/>
+  <g transform="translate(50 50) scale(0.8) translate(-50 -48.85)">
+    <rect x="22" y="22" width="56" height="48" rx="7" fill="#fff"/>
+    <rect x="26.5" y="28" width="20" height="14" rx="2.5" fill="#5EA8FF"/>
+    <rect x="53.5" y="28" width="20" height="14" rx="2.5" fill="#5EA8FF"/>
+    <rect x="26.5" y="56.5" width="47" height="4" rx="1.2" fill="#FFC107"/>
+    <circle cx="34.5" cy="70.5" r="5.2" fill="#fff"/>
+    <circle cx="65.5" cy="70.5" r="5.2" fill="#fff"/>
+  </g>
+</svg>

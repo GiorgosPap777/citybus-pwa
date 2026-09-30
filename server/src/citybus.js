@@ -22,13 +22,43 @@ const SCHEDULE_LIMIT = 8;
 // Deriving "today" from the host clock would be wrong in a UTC container.
 const SERVICE_TZ = 'Europe/Athens';
 
-const siteCache = new TtlCache({ name: 'sites', dir: CACHE_DIR });
-const staticCache = new TtlCache({ name: 'static', dir: CACHE_DIR });
-const liveCache = new TtlCache({ name: 'live' }); // memory only, by design
+// Failures are cached too, so single-flight collapses them like answers. A 404 is
+// an answer (no such city or line) and keeps; anything else is likely transient
+// and is kept only long enough to absorb a burst of polls.
+const failureTtl = (err) => (err.status === 404 ? 10 * 60 * 1000 : 5_000);
+
+// The caps bound memory: stop codes are user input, so the keys are too. Each is
+// far above what normal use reaches — every city and language fits in `static`.
+const siteCache = new TtlCache({ name: 'sites', dir: CACHE_DIR, maxEntries: 100, failureTtl });
+const staticCache = new TtlCache({ name: 'static', dir: CACHE_DIR, maxEntries: 200, failureTtl });
+// Memory only, by design.
+const liveCache = new TtlCache({ name: 'live', maxEntries: 2000, failureTtl });
 // Memory only: one entry per stop and weekday is too many small writes for disk.
-const scheduleCache = new TtlCache({ name: 'schedule' });
+const scheduleCache = new TtlCache({ name: 'schedule', maxEntries: 500, failureTtl });
 // Memory only: shapes are cheap to rebuild and would bloat the static cache file.
-const shapeCache = new TtlCache({ name: 'shapes' });
+const shapeCache = new TtlCache({ name: 'shapes', maxEntries: 300, failureTtl });
+
+// A ceiling on requests to citybus.gr from this server, shared by all users. The
+// caches keep normal use far below it; it exists so that nobody can use the proxy
+// to hammer the upstream by cycling uncached stop codes or city names, since it is
+// this server's address that would be blocked. It is global, not per client: behind
+// a reverse proxy and mobile carrier NAT one address can be many people, and what
+// it protects is the upstream, which is the same whoever asks.
+const UPSTREAM_PER_SECOND = 10;
+const UPSTREAM_BURST = 50;
+let upstreamBudget = UPSTREAM_BURST;
+let upstreamBudgetAt = Date.now();
+
+function spendUpstreamBudget() {
+  const now = Date.now();
+  upstreamBudget = Math.min(
+    UPSTREAM_BURST,
+    upstreamBudget + ((now - upstreamBudgetAt) / 1000) * UPSTREAM_PER_SECOND,
+  );
+  upstreamBudgetAt = now;
+  if (upstreamBudget < 1) throw new HttpError(503, 'Too many upstream requests; try again shortly');
+  upstreamBudget -= 1;
+}
 // Route polylines are simplified to this tolerance before they leave the server.
 // It cuts a typical route from ~900 points to ~120 (86 KB upstream to ~2 KB sent)
 // with no visible change at street zoom — which matters when the server sits on a
@@ -88,6 +118,7 @@ function decodeTokenExpiry(token) {
  */
 async function fetchSite(slug) {
   const url = `https://${slug}.citybus.gr/el/stops`;
+  spendUpstreamBudget();
   let res;
   try {
     res = await fetch(url, {
@@ -154,6 +185,7 @@ function upstreamFetch(site, path) {
  */
 async function apiGet(slug, buildPath) {
   let site = await getSite(slug);
+  spendUpstreamBudget();
   let res;
   try {
     res = await upstreamFetch(site, buildPath(site.agencyCode));
@@ -162,7 +194,10 @@ async function apiGet(slug, buildPath) {
   }
 
   if (res.status === 401) {
+    // Logged because it is the one path that otherwise only shows itself every 48h.
+    console.log(`[citybus] ${slug}: token rejected, fetching a new one`);
     site = await getSite(slug, { force: true });
+    spendUpstreamBudget();
     try {
       res = await upstreamFetch(site, buildPath(site.agencyCode));
     } catch (err) {
@@ -252,22 +287,51 @@ export function getLiveArrivals(slug, lang, stopCode) {
   });
 }
 
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-/** Weekday (0 = Sunday, as the upstream numbers them) and minute of day, in Greece. */
+/**
+ * Today's date, weekday (0 = Sunday, as the upstream numbers them) and minute of
+ * day, in Greece. Numeric parts only: a weekday read back from a locale's names
+ * breaks the day a locale changes an abbreviation, as en-GB has done for months.
+ */
 function serviceClock(date = new Date()) {
   const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-GB', {
+    new Intl.DateTimeFormat('en-US', {
       timeZone: SERVICE_TZ,
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
       hourCycle: 'h23',
     })
       .formatToParts(date)
-      .map((p) => [p.type, p.value]),
+      .map((p) => [p.type, Number(p.value)]),
   );
-  return { day: WEEKDAYS.indexOf(parts.weekday), minute: Number(parts.hour) * 60 + Number(parts.minute) };
+  const { year, month, day, hour, minute } = parts;
+  return {
+    date: { year, month, day },
+    weekday: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+    minute: hour * 60 + minute,
+    // How far Greek wall-clock time is ahead of UTC at this instant.
+    offsetMs: Date.UTC(year, month - 1, day, hour, minute) - (date.getTime() - (date.getTime() % 60_000)),
+  };
+}
+
+/**
+ * The instant a Greek wall-clock time happens. The offset is looked up for that
+ * date rather than taken from now: on the Saturday before summer time ends,
+ * Sunday's departures are an hour further away than a constant offset says, and
+ * the client drops each one an hour before it leaves. `minute` may run past
+ * midnight; Date.UTC carries it into the next day.
+ */
+function serviceInstant({ year, month, day }, minute) {
+  const wall = Date.UTC(year, month - 1, day, 0, minute);
+  const guess = wall - serviceClock(new Date(wall)).offsetMs;
+  return wall - serviceClock(new Date(guess)).offsetMs;
+}
+
+function nextDate({ year, month, day }) {
+  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  return { year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate() };
 }
 
 /**
@@ -315,21 +379,22 @@ export async function getSchedule(slug, lang, stopCode) {
   const now = Date.now();
   const clock = serviceClock(new Date(now));
   // Absolute times let the client drop departures as they pass without refetching.
-  // Greek offsets are whole hours, so the UTC minute boundary is the local one too.
-  const minuteStart = now - (now % 60_000);
-  const departsAt = (minute, dayOffset) =>
-    minuteStart + (dayOffset * 24 * 60 + minute - clock.minute) * 60_000;
 
-  const today = await getDayTimetable(slug, lang, stopCode, clock.day);
+  const today = await getDayTimetable(slug, lang, stopCode, clock.weekday);
   const departures = today
     .filter((trip) => trip.minute >= clock.minute)
     .slice(0, SCHEDULE_LIMIT)
-    .map(({ minute, ...trip }) => ({ ...trip, departsAt: departsAt(minute, 0), tomorrow: false }));
+    .map(({ minute, ...trip }) => ({
+      ...trip,
+      departsAt: serviceInstant(clock.date, minute),
+      tomorrow: false,
+    }));
 
   if (departures.length < SCHEDULE_LIMIT) {
-    const tomorrow = await getDayTimetable(slug, lang, stopCode, (clock.day + 1) % 7);
+    const tomorrow = await getDayTimetable(slug, lang, stopCode, (clock.weekday + 1) % 7);
+    const date = nextDate(clock.date);
     for (const { minute, ...trip } of tomorrow.slice(0, SCHEDULE_LIMIT - departures.length)) {
-      departures.push({ ...trip, departsAt: departsAt(minute, 1), tomorrow: true });
+      departures.push({ ...trip, departsAt: serviceInstant(date, minute), tomorrow: true });
     }
   }
 

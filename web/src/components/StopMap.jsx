@@ -85,6 +85,31 @@ const userIcon = L.divIcon({
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
+// While a bus is followed, the stops it serves stand out and the rest recede, so
+// the route reads as a line with its stops on it rather than one among hundreds
+// (asked for: "only the stops the bus will stop at"). They fade rather than
+// vanish, so a stop off the route can still be tapped. A stop's routeCodes come
+// with the stop list; checked against the drawn paths of five Heraklion routes,
+// every stop listed for a route lay within ~20 m of it.
+// Every style sets opacity: Leaflet's setStyle merges into the old options, so a
+// stop leaving the faded style would otherwise keep its 0.25.
+const ROUTE_STOP = (color) => ({
+  radius: 6,
+  color: color || '#1d4ed8',
+  weight: 3,
+  opacity: 1,
+  fillColor: '#ffffff',
+  fillOpacity: 1,
+});
+const OFF_ROUTE_STOP = {
+  radius: 4,
+  color: '#0b3b8c',
+  weight: 1,
+  opacity: 0.25,
+  fillColor: '#2563eb',
+  fillOpacity: 0.2,
+};
+
 /** Visible map height below the top bar and above the sheet, and the sheet's height. */
 function visibleBand(map, getBottomInset) {
   const { y } = map.getSize();
@@ -261,6 +286,7 @@ export default function StopMap({
   focusedVehicle,
   onSelectVehicle,
   routePoints,
+  routeCode,
   routeColor,
   userPosition,
   panTarget,
@@ -278,17 +304,20 @@ export default function StopMap({
     () =>
       stops.map((stop) => {
         const isSelected = selectedCode === stop.code;
+        const style = isSelected
+          ? { radius: 9, color: '#ffffff', weight: 3, opacity: 1, fillColor: '#f59e0b', fillOpacity: 1 }
+          : !routeCode
+            ? { radius: 5, color: '#0b3b8c', weight: 1.5, opacity: 1, fillColor: '#2563eb', fillOpacity: 1 }
+            : stop.routeCodes?.includes(routeCode)
+              ? ROUTE_STOP(routeColor)
+              : OFF_ROUTE_STOP;
+        const { radius, ...pathOptions } = style;
         return (
           <CircleMarker
             key={stop.code}
             center={[stop.latitude, stop.longitude]}
-            radius={isSelected ? 9 : 5}
-            pathOptions={{
-              color: isSelected ? '#ffffff' : '#0b3b8c',
-              weight: isSelected ? 3 : 1.5,
-              fillColor: isSelected ? '#f59e0b' : '#2563eb',
-              fillOpacity: 1,
-            }}
+            radius={radius}
+            pathOptions={pathOptions}
             eventHandlers={{ click: () => onSelectStop(stop) }}
           >
             <Tooltip direction="top" offset={[0, -6]}>
@@ -297,7 +326,7 @@ export default function StopMap({
           </CircleMarker>
         );
       }),
-    [stops, selectedCode, onSelectStop],
+    [stops, selectedCode, onSelectStop, routeCode, routeColor],
   );
 
   return (

@@ -30,6 +30,7 @@ function StopRow({ stop, onSelect, trailing }) {
 
 export default function HomePanel({
   stops,
+  stopsUnavailable = false,
   favourites,
   onSelectStop,
   geo,
@@ -72,6 +73,21 @@ export default function HomePanel({
     insecure: t('locationInsecure'),
     unavailable: t('locationUnavailable'),
   }[geo.error];
+
+  // Without the stop list there is nothing to search or sort by distance, but a
+  // favourite carries its saved name and code, which is all live arrivals need.
+  if (stopsUnavailable) {
+    return collapsed || !favouriteStops.length ? null : (
+      <section>
+        <h3 className="section-head">{t('favourites')}</h3>
+        <ul className="stop-list">
+          {favouriteStops.map((stop) => (
+            <StopRow key={stop.code} stop={stop} onSelect={onSelectStop} />
+          ))}
+        </ul>
+      </section>
+    );
+  }
 
   return (
     <>

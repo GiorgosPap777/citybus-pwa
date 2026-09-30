@@ -29,33 +29,78 @@ export function useTimetableShown(stopKey, liveCount) {
   return [shown, toggle];
 }
 
+// Fetch the next departures again once fewer than this many are still to come.
+const REFILL_AT = 3;
+// A departure stays listed this long after its time (StopSheet drops it after).
+const PASSED_GRACE_MS = 60_000;
+// Never refetch sooner than this after the last fetch, whatever the list says.
+const MIN_REFETCH_MS = 60_000;
+// Nor let a list with nothing left to count down sit longer than this.
+const MAX_AGE_MS = 30 * 60_000;
+
 /**
- * Timetabled departures for one stop, fetched once each time `enabled` turns on.
- * The caller enables it only while the timetable is shown (see useTimetableShown),
- * so opening a busy stop costs no extra request.
+ * Timetabled departures for one stop, fetched while `enabled`. The caller enables
+ * it only while the timetable is shown (see useTimetableShown), so opening a busy
+ * stop costs no extra request.
  *
  * Like useStops, it never hands out another stop's data: for the render between
  * a stop change and the fetch starting, `state` still holds the previous stop.
  */
 export function useSchedule(city, lang, stopCode, enabled) {
-  const [state, setState] = useState({ key: null, data: null, error: null });
+  const [state, setState] = useState({ key: null, data: null, error: null, receivedAt: 0 });
+  const [version, setVersion] = useState(0);
   const key = stopCode ? `${city}:${lang}:${stopCode}` : null;
 
   useEffect(() => {
     if (!enabled || !key) return undefined;
     const controller = new AbortController();
     fetchSchedule(city, lang, stopCode, controller.signal)
-      .then((data) => setState({ key, data, error: null }))
+      .then((data) => setState({ key, data, error: null, receivedAt: Date.now() }))
       .catch((err) => {
-        if (err.name !== 'AbortError') setState({ key, data: null, error: err });
+        if (err.name !== 'AbortError') setState({ key, data: null, error: err, receivedAt: 0 });
       });
     return () => controller.abort();
-  }, [city, lang, stopCode, enabled, key]);
+  }, [city, lang, stopCode, enabled, key, version]);
+
+  const refresh = useCallback(() => setVersion((n) => n + 1), []);
 
   const isCurrent = key !== null && state.key === key;
+  const data = isCurrent ? state.data : null;
+  const { receivedAt } = state;
+
+  // The list is "the next 8 from when it was fetched", and it runs down: a busy
+  // stop's eight cover about 20 minutes. Fetched once, it emptied while the stop
+  // stayed open, and a phone pocketed with a stop open came back to times all
+  // dropped as passed, which then read as "no more departures". So fetch again
+  // when it runs low, or on returning to the app once that point is past. The
+  // server keeps day timetables for 12 hours, so this seldom reaches the upstream.
+  useEffect(() => {
+    if (!enabled || !data) return undefined;
+    const { departures } = data;
+    const runsLowAt = departures.length
+      ? departures[Math.max(0, departures.length - REFILL_AT)].departsAt + PASSED_GRACE_MS
+      : Infinity;
+    // The floor is timed from this device's clock, not the server's fetchedAt: a
+    // phone whose clock runs ahead would otherwise find every fresh list overdue
+    // and refetch in a loop.
+    const due = Math.max(receivedAt + MIN_REFETCH_MS, Math.min(runsLowAt, receivedAt + MAX_AGE_MS));
+
+    // Hidden, the page waits: the visibility handler catches up on return.
+    const refetchIfDue = () => {
+      if (!document.hidden && Date.now() >= due) refresh();
+    };
+    const timer = setTimeout(refetchIfDue, Math.max(0, due - Date.now()));
+    document.addEventListener('visibilitychange', refetchIfDue);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', refetchIfDue);
+    };
+  }, [enabled, data, receivedAt, refresh]);
+
   return {
-    data: isCurrent ? state.data : null,
+    data,
     error: isCurrent ? state.error : null,
     loading: enabled && !isCurrent,
+    refresh,
   };
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
+import { errorMessage } from '../i18n.js';
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -160,7 +161,7 @@ function ScheduleList({ schedule, open = true, onToggle, t }) {
     return onToggle ? (
       <section>
         {head}
-        <p className="hint">{t('error')}</p>
+        <p className="hint">{errorMessage(schedule.error, t)}</p>
       </section>
     ) : null;
   }
@@ -261,8 +262,8 @@ export default function StopSheet({
           {loading && <p className="state">{t('loading')}</p>}
 
           {!loading && error && (
-            <div className="state error">
-              <p>{error.message || t('error')}</p>
+            <div className="state error" role="status">
+              <p>{errorMessage(error, t)}</p>
               <button type="button" className="btn" onClick={onRefresh}>
                 {t('retry')}
               </button>
@@ -270,11 +271,12 @@ export default function StopSheet({
           )}
 
           {!loading && !error && vehicles.length === 0 && (
-            <>
-              <p className="state">{t('noService')}</p>
-              <ScheduleList schedule={schedule} t={t} />
-            </>
+            <p className="state">{t('noService')}</p>
           )}
+
+          {/* With no live buses, whether none are due or live data failed, the
+              timetable is the only answer left. */}
+          {!loading && vehicles.length === 0 && <ScheduleList schedule={schedule} t={t} />}
 
           {vehicles.length > 0 && (
             <ul className="arrivals">

@@ -115,6 +115,13 @@ body {
 /* Following the finger must not lag behind it. */
 .sheet.dragging { transition: none; }
 
+/* On a wide screen a full-width sheet stretched every row edge to edge. Capped and
+   centred, it still sits at the bottom, so the map's framing (getBottomInset) is
+   unchanged: the strips beside it are simply extra map. */
+@media (min-width: 720px) {
+  .sheet { max-width: 480px; margin: 0 auto; }
+}
+
 /* Full width and sticky so it is always there to grab, even with the list scrolled. */
 .sheet-handle {
   position: sticky;
@@ -374,6 +381,9 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
 
 .search-row { margin-bottom: 4px; }
 
+/* 16px: iOS zooms the page into any field smaller than that when it is focused,
+   and nothing stops it now that pinch-zoom is allowed (maximum-scale is gone,
+   since it also locked out people who need to zoom). Same for the select below. */
 .search {
   width: 100%;
   padding: 10px 12px;
@@ -382,6 +392,7 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
+  font-size: 16px;
 }
 
 .state { padding: 16px 0; text-align: center; color: var(--muted); }
@@ -457,6 +468,7 @@ button.row.focused .row-hint { color: var(--accent); opacity: 1; }
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
+  font-size: 16px;
 }
 
 .segmented { display: flex; gap: 6px; }

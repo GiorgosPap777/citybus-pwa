@@ -16,8 +16,8 @@ const MIN_REFRESH_GAP_MS = 3000;
 export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
   const [state, setState] = useState({ key: null, data: null, error: null, loading: false, refreshing: false });
   const key = stopCode ? `${city}:${lang}:${stopCode}` : null;
-  const [nonce, setNonce] = useState(0);
   const hasData = useRef(false);
+  const refreshNow = useRef(() => {});
 
   useEffect(() => {
     hasData.current = false;
@@ -91,6 +91,21 @@ export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
       }
     };
 
+    // A manual refresh is one more poll through cycle(), not a restart of this
+    // effect. Restarting it (measured) emptied the list, brought back the spinner
+    // and shrank the sheet by 330px before regrowing it; with the network down it
+    // replaced good arrivals with an error. Repeated taps wait out the same floor
+    // as resume events rather than each firing a request.
+    refreshNow.current = () => {
+      const wait = MIN_REFRESH_GAP_MS - (Date.now() - lastFetchAt);
+      if (wait <= 0) {
+        cycle();
+      } else {
+        clearTimeout(timer);
+        timer = setTimeout(cycle, wait);
+      }
+    };
+
     cycle();
     document.addEventListener('visibilitychange', onVisibilityChange);
 
@@ -98,11 +113,12 @@ export function useLiveArrivals(city, lang, stopCode, intervalMs = POLL_MS) {
       cancelled = true;
       clearTimeout(timer);
       controller.abort();
+      refreshNow.current = () => {};
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [city, lang, stopCode, intervalMs, nonce, key]);
+  }, [city, lang, stopCode, intervalMs, key]);
 
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = useCallback(() => refreshNow.current(), []);
 
   // Like useStops: for the render between a stop change and the fetch starting,
   // `state` still holds the previous stop's arrivals. Anything deciding from them

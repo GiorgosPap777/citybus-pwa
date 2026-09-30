@@ -18,6 +18,7 @@ const STRINGS = {
     loading: 'Φόρτωση…',
     loadingStops: 'Φόρτωση στάσεων…',
     error: 'Κάτι πήγε στραβά.',
+    serviceDown: 'Η υπηρεσία δεν απαντά αυτή τη στιγμή.',
     cityUnavailable: 'Αυτή η πόλη δεν παρέχει δεδομένα στάσεων. Δοκιμάστε άλλη πόλη.',
     retry: 'Δοκιμάστε ξανά',
     arriving: 'Φτάνει',
@@ -39,7 +40,7 @@ const STRINGS = {
     stop: 'Στάση',
     metresAway: '{n} μ.',
     kmAway: '{n} χλμ.',
-    offline: 'Εκτός σύνδεσης',
+    offline: 'Χωρίς σύνδεση στο διαδίκτυο.',
     myLocation: 'Η θέση μου',
     changeCity: 'Αλλαγή πόλης',
     refresh: 'Ανανέωση',
@@ -69,6 +70,7 @@ const STRINGS = {
     loading: 'Loading…',
     loadingStops: 'Loading stops…',
     error: 'Something went wrong.',
+    serviceDown: 'The bus service is not responding right now.',
     cityUnavailable: 'This city does not publish stop data. Try another city.',
     retry: 'Try again',
     arriving: 'Arriving',
@@ -90,7 +92,7 @@ const STRINGS = {
     stop: 'Stop',
     metresAway: '{n} m',
     kmAway: '{n} km',
-    offline: 'Offline',
+    offline: 'No internet connection.',
     myLocation: 'My location',
     changeCity: 'Change city',
     refresh: 'Refresh',
@@ -144,12 +146,26 @@ const CITY_NAMES_EN = {
   'yper-xanthi': 'Xanthi (intercity)',
 };
 
-const titleCase = (slug) => slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+// String() because the slug can come from saved data; see asCity in App.jsx.
+const titleCase = (slug) =>
+  String(slug ?? '').replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 /** Display name for a city: the scraped Greek name, or an English one. */
 export function cityName(city, lang) {
   if (lang === 'en') return CITY_NAMES_EN[city.slug] ?? titleCase(city.slug);
   return city.name ?? titleCase(city.slug);
+}
+
+/**
+ * What to tell the user about a failed request. The error's own message is the
+ * browser's or the server's English ("Failed to fetch", "Upstream returned 502"),
+ * which means nothing in the Greek UI.
+ */
+export function errorMessage(err, t) {
+  // fetch rejects with a TypeError when the request never got an answer.
+  if (err instanceof TypeError || navigator.onLine === false) return t('offline');
+  if (err?.status >= 500) return t('serviceDown');
+  return t('error');
 }
 
 export function translator(lang) {
