@@ -43,7 +43,7 @@ async function showNotification(title, body) {
  * There is no push server, so it works while the app is running: on screen, or in
  * the background for as long as the phone lets it run.
  */
-export function useArrivalAlert({ alert, setAlert, city, lang, openStopCode, openArrivals, say, t }) {
+export function useArrivalAlert({ alert, setAlert, city, lang, openStopCode, openArrivals, stopNames, say, t }) {
   const onOpenStop = !!alert && alert.stop.code === openStopCode;
   const background = useLiveArrivals(city, lang, alert && !onOpenStop ? alert.stop.code : null, {
     whileHidden: true,
@@ -85,11 +85,13 @@ export function useArrivalAlert({ alert, setAlert, city, lang, openStopCode, ope
     if (vehicle.departureMins > alert.minutes) return;
 
     setAlert(null);
+    // The user's own name for the stop, when it has one: it is how they know it.
+    const stop = stopNames.get(alert.stop.code) ?? alert.stop.name;
     tell(
       title,
       vehicle.departureMins <= 0
-        ? t('alertBodyNow', { stop: alert.stop.name })
-        : t('alertBody', { stop: alert.stop.name, n: vehicle.departureMins }),
+        ? t('alertBodyNow', { stop })
+        : t('alertBody', { stop, n: vehicle.departureMins }),
     );
     // Deliberately keyed on the data alone: each answer is looked at once.
   }, [data]);

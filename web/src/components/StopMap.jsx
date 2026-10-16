@@ -299,6 +299,7 @@ export default function StopMap({
   routeColor,
   routeStops,
   passedIndex,
+  names,
   userPosition,
   panTarget,
   getBottomInset,
@@ -345,12 +346,12 @@ export default function StopMap({
             eventHandlers={{ click: () => onSelectStop(stop) }}
           >
             <Tooltip direction="top" offset={[0, -6]}>
-              {stop.name}
+              {names.get(stop.code) ?? stop.name}
             </Tooltip>
           </CircleMarker>
         );
       }),
-    [stops, selectedCode, onSelectStop, routeCode, routeColor, onRoute, passed],
+    [stops, selectedCode, onSelectStop, routeCode, routeColor, onRoute, passed, names],
   );
 
   return (

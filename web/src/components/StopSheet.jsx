@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 import { errorMessage, errorShort } from '../i18n.js';
+import { MAX_STOP_NAME } from '../hooks/useStopNames.js';
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -288,8 +289,136 @@ function ScheduleList({ schedule, open = true, onToggle, lang, t }) {
   );
 }
 
+/**
+ * The stop's name and actions. The name can be replaced with the user's own
+ * (useStopNames): many stops share a name. The official one stays on the line
+ * below it, since it is what the sign at the stop says.
+ *
+ * Keyed by stop, so an edit left open does not carry over to the next stop.
+ */
+function StopHeader({
+  stop,
+  nickname,
+  onRename,
+  refreshing,
+  isFavourite,
+  onToggleFavourite,
+  onShare,
+  onClose,
+  gripProps,
+  t,
+}) {
+  const [draft, setDraft] = useState(null); // null: not editing
+
+  // Starts from the name shown, selected: typing replaces it, and a tap inside
+  // keeps it to add to ("… towards the port"). A stable callback ref runs once,
+  // when the field appears, so a later tap can place the caret.
+  const startEditing = () => setDraft(nickname ?? stop.name);
+  const focusField = useCallback((el) => {
+    el?.focus();
+    el?.select();
+  }, []);
+
+  const save = (e) => {
+    e?.preventDefault();
+    onRename(stop.code, draft, stop.name);
+    setDraft(null);
+  };
+
+  if (draft !== null) {
+    return (
+      <header className="sheet-head grip" {...gripProps}>
+        <form className="sheet-title rename" onSubmit={save}>
+          <input
+            ref={focusField}
+            className="rename-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === 'Escape' && setDraft(null)}
+            placeholder={stop.name}
+            maxLength={MAX_STOP_NAME}
+            enterKeyHint="done"
+            autoComplete="off"
+            aria-label={t('stopNickname')}
+          />
+          <p className="muted">{t('renameHint')}</p>
+        </form>
+        <div className="sheet-actions">
+          <button type="button" className="icon-btn save" onClick={save} aria-label={t('save')} title={t('save')}>
+            <Icon name="check" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setDraft(null)}
+            aria-label={t('cancel')}
+            title={t('cancel')}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+      </header>
+    );
+  }
+
+  return (
+    <header className="sheet-head grip" {...gripProps}>
+      <div className="sheet-title">
+        {/* A stop opened from a link has only its code until the stop list arrives. */}
+        <h2>
+          {nickname ?? (stop.name || t('loading'))}
+          {/* A button only around the pencil: the title is part of the grip, and a
+              drag that starts on a button does not move the sheet. */}
+          {(nickname || stop.name) && (
+            <button
+              type="button"
+              className="rename-btn"
+              onClick={startEditing}
+              aria-label={t('renameStop')}
+              title={t('renameStop')}
+            >
+              <Icon name="edit" size={15} />
+            </button>
+          )}
+        </h2>
+        <p className="muted">
+          {t('stop')} {stop.code}
+          {nickname && stop.name && <> · {stop.name}</>}
+          {refreshing && <span className="dot-pulse" aria-hidden="true" />}
+        </p>
+      </div>
+      <div className="sheet-actions">
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onShare}
+          aria-label={t('share')}
+          title={t('share')}
+        >
+          <Icon name="share" />
+        </button>
+        <button
+          type="button"
+          className={`icon-btn star ${isFavourite ? 'on' : ''}`}
+          onClick={onToggleFavourite}
+          aria-pressed={isFavourite}
+          aria-label={isFavourite ? t('removeFavourite') : t('addFavourite')}
+          title={isFavourite ? t('removeFavourite') : t('addFavourite')}
+        >
+          <Icon name="star" filled={isFavourite} />
+        </button>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label={t('close')}>
+          <Icon name="close" />
+        </button>
+      </div>
+    </header>
+  );
+}
+
 export default function StopSheet({
   stop,
+  nickname,
+  onRename,
   arrivals,
   schedule,
   timetableShown,
@@ -319,40 +448,19 @@ export default function StopSheet({
 
   return (
     <>
-      <header className="sheet-head grip" {...gripProps}>
-        <div className="sheet-title">
-          {/* A stop opened from a link has only its code until the stop list arrives. */}
-          <h2>{stop.name || t('loading')}</h2>
-          <p className="muted">
-            {t('stop')} {stop.code}
-            {refreshing && <span className="dot-pulse" aria-hidden="true" />}
-          </p>
-        </div>
-        <div className="sheet-actions">
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={onShare}
-            aria-label={t('share')}
-            title={t('share')}
-          >
-            <Icon name="share" />
-          </button>
-          <button
-            type="button"
-            className={`icon-btn star ${isFavourite ? 'on' : ''}`}
-            onClick={onToggleFavourite}
-            aria-pressed={isFavourite}
-            aria-label={isFavourite ? t('removeFavourite') : t('addFavourite')}
-            title={isFavourite ? t('removeFavourite') : t('addFavourite')}
-          >
-            <Icon name="star" filled={isFavourite} />
-          </button>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('close')}>
-            <Icon name="close" />
-          </button>
-        </div>
-      </header>
+      <StopHeader
+        key={stop.code}
+        stop={stop}
+        nickname={nickname}
+        onRename={onRename}
+        refreshing={refreshing}
+        isFavourite={isFavourite}
+        onToggleFavourite={onToggleFavourite}
+        onShare={onShare}
+        onClose={onClose}
+        gripProps={gripProps}
+        t={t}
+      />
 
       {collapsed ? (
         <Peek

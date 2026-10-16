@@ -349,7 +349,7 @@ a bus, or dragging the map. It expands again on a tap or an upward drag.
   identity, which cuts every glide short. Jumps over `MAX_GLIDE_M` (a new trip or a GPS glitch) and
   `prefers-reduced-motion` skip the animation.
 - Stop markers are memoised on `[stops, selectedCode, onSelectStop, routeCode, routeColor, onRoute,
-  passed]`. Otherwise
+  passed, names]`. Otherwise
   each 15s poll handed all ~550 `CircleMarker`s a new `pathOptions` object, and react-leaflet
   restyled every one — a full canvas redraw per poll. `onSelectStop` must stay a stable callback for this to hold.
 - The route line and the GPS accuracy circle live in a pane at z-index 390, just below the stops
@@ -653,6 +653,31 @@ little and never breaks a match.
   city. An unknown city 404s at its site, before it has an agency code, so it is never marked. A week,
   so a city the operator fills in is tried again.
 
+### 21. The user's own names for stops (`useStopNames.js`)
+
+Asked for: many stops share a name (Heraklion has two ΑΓΙΟΥ ΜΗΝΑ, `0133` and `0216`, on either side
+of the road, and dozens more pairs), so favourites could read as the same stop twice. The pencil after
+a stop's name replaces it with one the user picks.
+
+- Kept in `localStorage` (`citybus.stopNames.v1`) as `{city, code, name}` entries, apart from
+  favourites, so any stop can be named. Sanitised on read like favourites (decision 9). Names are
+  trimmed and capped at `MAX_STOP_NAME` (60): room for the longest official name, 50 characters, and a
+  direction added to it.
+- The stop list is never rewritten with them. `useStopNames(city)` gives a `Map` of code to name, and
+  each place that shows a stop's name asks it: the stop's header, the home lists, search, the map's
+  tooltip, the alert bar and the alert's notification. Stops stay as the server sent them, so the trail,
+  favourites (which save the official name) and the selected-stop sync in `App.jsx` are untouched.
+  The `Map` keeps its identity until a name changes, since the map's markers are memoised on it.
+- The official name stays in sight: on the line under the header's title, and under the user's name in
+  the home lists, since it is what the sign at the stop says. A named row in those lists is two lines,
+  set to the ~52 px of an arrival row.
+- The name is the user's: the same in both languages, and never in a shared link or its title.
+- Search finds a stop by either name, the user's own names first.
+- The field starts from the name shown, selected: typing replaces it, a tap inside adds to it. Saved
+  empty, or as the official name unchanged, the stop's own name is removed.
+- Only the pencil is a button. The title is part of the header's grip, and a drag that starts on a
+  button does not move the sheet (decision 6), so a title-wide button would have taken that away.
+
 ---
 
 ## Conventions
@@ -693,7 +718,7 @@ web/src/
   main.jsx     mounts App inside ErrorBoundary
   components/  StopMap · StopSheet · HomePanel · SettingsSheet · ErrorBoundary · Icon (inline SVGs)
   hooks/       useStops · useLiveArrivals · useSchedule · useRouteShape · useRouteSequence
-               useArrivalAlert · useGeolocation · useSheetDrag · useFavourites
+               useArrivalAlert · useGeolocation · useSheetDrag · useFavourites · useStopNames
                usePersistentState · useBackButton
 web/public/sw-alerts.js focuses the app when an alert's notification is tapped; loaded into the
                         generated service worker by workbox.importScripts
@@ -812,6 +837,12 @@ Front end: `cd web && npm run build`, then load `localhost:3000` at phone size a
 - a followed bus filtered out of two answers: let go with a message, history back one entry
 - `agios nikolaos` (Heraklion), `hania` and `kounoupidiana` (Chania), `eleftherias plateia` find
   their stops; `panepistimio` still has ΠΑΝΕΠΙΣΤΗΜΙΟ ΚΡΗΤΗΣ in the top results
+- the pencil beside a stop's name opens a field with the name selected; Enter or ✓ saves it, Escape or
+  ✕ leaves it as it was. The header then shows the new name over `Stop 0216 · ΑΓΙΟΥ ΜΗΝΑ`, as do
+  favourites, search (by either name, the user's first), the alert bar and the map tooltip. In English
+  the name stays and the line under it turns English. Saved empty, the original returns and
+  `citybus.stopNames.v1` is `[]`. Planted entries with a bad city, a numeric name or a blank name are
+  dropped on load, without the error screen
 
 Traps for automated browsers:
 - A page that is **not visible** gets no `requestAnimationFrame`, so `flyTo` stalls on its first

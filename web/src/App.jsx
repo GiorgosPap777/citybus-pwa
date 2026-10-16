@@ -14,6 +14,7 @@ import { useRouteShape } from './hooks/useRouteShape.js';
 import { useRouteSequence } from './hooks/useRouteSequence.js';
 import { useGeolocation } from './hooks/useGeolocation.js';
 import { useFavourites } from './hooks/useFavourites.js';
+import { useStopNames } from './hooks/useStopNames.js';
 import { usePersistentState } from './hooks/usePersistentState.js';
 import { useSheetCollapse, useSheetDrag } from './hooks/useSheetDrag.js';
 import { useBackButton } from './hooks/useBackButton.js';
@@ -145,6 +146,7 @@ export default function App() {
 
   const { stops, loading: stopsLoading, error: stopsError, retry: retryStops } = useStops(city, lang);
   const favourites = useFavourites();
+  const { names: stopNames, rename: renameStop } = useStopNames(city);
   const geo = useGeolocation();
 
   const alertOnOpenStop = !!alert && alert.stop.code === selectedStop?.code;
@@ -163,6 +165,7 @@ export default function App() {
     lang,
     openStopCode: selectedStop?.code,
     openArrivals: arrivals,
+    stopNames,
     say,
     t,
   });
@@ -426,6 +429,8 @@ export default function App() {
   // The system share sheet where there is one (phones), else the clipboard, else
   // the link in a panel to copy by hand. It used to be shown in a message that went
   // after 4 seconds and closed when tapped, which is how one tries to select it.
+  // The title is the official name: the user's own name for a stop means nothing
+  // to the person it is sent to.
   const shareStop = useCallback(async () => {
     if (!selectedStop) return;
     const url = stopLinkUrl(city, selectedStop.code);
@@ -478,6 +483,7 @@ export default function App() {
         routeColor={focus?.color}
         routeStops={routeStops}
         passedIndex={progress?.passed}
+        names={stopNames}
         userPosition={geo.position}
         panTarget={panTarget}
         getBottomInset={getBottomInset}
@@ -540,7 +546,7 @@ export default function App() {
             <button type="button" className="alert-bar-main" onClick={() => selectStop(alert.stop)}>
               <Icon name="bell" size={15} filled />
               <span className="alert-bar-text">
-                <strong>{alert.lineCode}</strong> · {alert.stop.name}
+                <strong>{alert.lineCode}</strong> · {stopNames.get(alert.stop.code) ?? alert.stop.name}
               </span>
               {arrivalAlert.vehicle && (
                 <span className="alert-bar-eta">
@@ -583,6 +589,8 @@ export default function App() {
         {sheet === 'stop' && selectedStop && (
           <StopSheet
             stop={selectedStop}
+            nickname={stopNames.get(selectedStop.code)}
+            onRename={renameStop}
             arrivals={arrivals}
             schedule={schedule}
             timetableShown={timetableShown}
@@ -635,6 +643,7 @@ export default function App() {
                 stops={stops}
                 stopsUnavailable={!!stopsError}
                 favourites={favourites.forCity(city)}
+                names={stopNames}
                 onSelectStop={selectStop}
                 geo={geo}
                 onRequestLocation={requestLocation}

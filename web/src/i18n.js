@@ -77,6 +77,11 @@ const STRINGS = {
     copy: 'Αντιγραφή',
     offlineShort: 'χωρίς σύνδεση',
     noAnswerShort: 'χωρίς απάντηση',
+    renameStop: 'Μετονομασία στάσης',
+    stopNickname: 'Το δικό σας όνομα για τη στάση',
+    renameHint: 'Αφήστε το κενό για το αρχικό όνομα.',
+    save: 'Αποθήκευση',
+    cancel: 'Ακύρωση',
   },
   en: {
     appName: 'City Bus',
@@ -154,6 +159,11 @@ const STRINGS = {
     copy: 'Copy',
     offlineShort: 'offline',
     noAnswerShort: 'no answer',
+    renameStop: 'Rename stop',
+    stopNickname: 'Your name for this stop',
+    renameHint: 'Leave it empty to use the original name.',
+    save: 'Save',
+    cancel: 'Cancel',
   },
 };
 

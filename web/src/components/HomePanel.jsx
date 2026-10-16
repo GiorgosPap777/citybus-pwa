@@ -5,12 +5,16 @@ import { fold, matchesStems, soundOf, soundsOfQuery, stemsOfQuery } from '../sea
 
 const MAX_RESULTS = 25;
 
-function StopRow({ stop, onSelect, trailing }) {
+/** A stop the user has named shows that name, with the official one beneath it. */
+function StopRow({ stop, nickname, onSelect, trailing }) {
   return (
     <li>
       <button type="button" className="stop-row" onClick={() => onSelect(stop)}>
         <span className="stop-code">{stop.code}</span>
-        <span className="stop-name">{stop.name}</span>
+        <span className="stop-name">
+          <span>{nickname ?? stop.name}</span>
+          {nickname && stop.name && <small>{stop.name}</small>}
+        </span>
         {trailing && <span className="stop-meta">{trailing}</span>}
       </button>
     </li>
@@ -21,6 +25,7 @@ export default function HomePanel({
   stops,
   stopsUnavailable = false,
   favourites,
+  names,
   onSelectStop,
   geo,
   onRequestLocation,
@@ -34,26 +39,34 @@ export default function HomePanel({
 }) {
   const [query, setQuery] = useState('');
 
-  // Folded once per stop list, not once per keystroke.
+  // Folded once per stop list, not once per keystroke. A stop the user has named
+  // is found by either name.
   const searchIndex = useMemo(
     () =>
       stops.map((stop) => {
-        const sound = soundOf(stop.name);
-        return { stop, code: fold(stop.code), name: fold(stop.name), sound, words: sound.split(' ') };
+        const nickname = names.get(stop.code) ?? '';
+        const sound = soundOf(`${nickname} ${stop.name ?? ''}`).trim();
+        return {
+          stop,
+          code: fold(stop.code),
+          name: fold(stop.name),
+          nickname: fold(nickname),
+          sound,
+          words: sound.split(' '),
+        };
       }),
-    [stops],
+    [stops, names],
   );
 
-  // Matches as typed come first. Then matches by sound (Greeklish, a misplaced η
-  // or ω), then by words in any order with any ending (search.js). Each only fills
-  // the list after the ones before, so it never pushes a closer match out.
+  // The user's own names come first: one they gave a stop is the stop they mean.
+  // Then matches as typed, then by sound (Greeklish, a misplaced η or ω), then by
+  // words in any order with any ending (search.js). Each only fills the list after
+  // the ones before, so it never pushes a closer match out.
   const results = useMemo(() => {
     const needle = fold(query).trim();
     if (!needle) return null;
-    const matches = searchIndex.filter(
-      (entry) => entry.code.includes(needle) || entry.name.includes(needle),
-    );
-    const found = new Set(matches);
+    const matches = [];
+    const found = new Set();
     const fill = (test) => {
       for (const entry of searchIndex) {
         if (matches.length >= MAX_RESULTS) return;
@@ -63,11 +76,13 @@ export default function HomePanel({
         }
       }
     };
+    fill((entry) => entry.nickname.includes(needle));
+    fill((entry) => entry.code.includes(needle) || entry.name.includes(needle));
     const sounds = soundsOfQuery(query);
     fill((entry) => sounds.some((sound) => entry.sound.includes(sound)));
     const readings = stemsOfQuery(query);
     fill((entry) => readings.some((stems) => matchesStems(stems, entry.words)));
-    return matches.slice(0, MAX_RESULTS).map((entry) => entry.stop);
+    return matches.map((entry) => entry.stop);
   }, [query, searchIndex]);
 
   const favouriteStops = useMemo(() => {
@@ -104,7 +119,7 @@ export default function HomePanel({
         <h3 className="section-head">{t('favourites')}</h3>
         <ul className="stop-list">
           {favouriteStops.map((stop) => (
-            <StopRow key={stop.code} stop={stop} onSelect={onSelectStop} />
+            <StopRow key={stop.code} stop={stop} nickname={names.get(stop.code)} onSelect={onSelectStop} />
           ))}
         </ul>
       </section>
@@ -131,7 +146,7 @@ export default function HomePanel({
         results.length ? (
           <ul className="stop-list">
             {results.map((stop) => (
-              <StopRow key={stop.code} stop={stop} onSelect={onSelectStop} />
+              <StopRow key={stop.code} stop={stop} nickname={names.get(stop.code)} onSelect={onSelectStop} />
             ))}
           </ul>
         ) : (
@@ -144,7 +159,7 @@ export default function HomePanel({
             {favouriteStops.length ? (
               <ul className="stop-list">
                 {favouriteStops.map((stop) => (
-                  <StopRow key={stop.code} stop={stop} onSelect={onSelectStop} />
+                  <StopRow key={stop.code} stop={stop} nickname={names.get(stop.code)} onSelect={onSelectStop} />
                 ))}
               </ul>
             ) : (
@@ -183,6 +198,7 @@ export default function HomePanel({
                   <StopRow
                     key={stop.code}
                     stop={stop}
+                    nickname={names.get(stop.code)}
                     onSelect={onSelectStop}
                     trailing={formatDistance(stop.distance, t)}
                   />

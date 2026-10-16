@@ -41,6 +41,8 @@ configuration — the app discovers each one by itself.
   strip of buses says when its minutes are old or the connection is down, and everything retries
   by itself when the network returns.
 - **Favourites** — save your home and work stops; they open first, no map needed.
+- **Name stops yourself** — tap the pencil beside a stop's name to give it your own ("Home", "Agios
+  Minas → port"), for when two stops share a name. The official name stays underneath.
 - **Greek and English**, including translated stop, line and city names.
 - **Installable** — add to your home screen and it runs like a native app.
 
@@ -165,7 +167,7 @@ server/          Express proxy + token manager + cache; serves web/dist in produ
 web/             React 19 + Vite + Leaflet PWA
   src/components/  StopMap · StopSheet · HomePanel · SettingsSheet
   src/hooks/       useStops · useLiveArrivals · useSchedule · useGeolocation · useFavourites
-                   useArrivalAlert · useRouteSequence · …
+                   useStopNames · useArrivalAlert · useRouteSequence · …
 AGENTS.md        architecture notes, API reference, and why the tricky code is shaped as it is
 DEPLOY.md        putting it on a server behind Nginx Proxy Manager
 ```
